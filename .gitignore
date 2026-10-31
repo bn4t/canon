@@ -1,4 +1,5 @@
-/canon
-web/node_modules/
-web/dist/
+/node_modules/
+/dist/
+/release/
+/.screens/
 .DS_Store
