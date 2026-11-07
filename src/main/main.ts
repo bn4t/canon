@@ -117,7 +117,7 @@ function menu(): Menu {
   const template: MenuItemConstructorOptions[] = [
     ...(isMac ? [{ role: 'appMenu' as const, submenu: [
       { role: 'about' as const }, { type: 'separator' as const },
-      cmd('Settings…', 'go:project/ai', 'Cmd+,'), { type: 'separator' as const },
+      cmd('Settings…', 'settings', 'Cmd+,'), { type: 'separator' as const },
       { role: 'services' as const }, { type: 'separator' as const }, { role: 'hide' as const }, { role: 'hideOthers' as const }, { role: 'unhide' as const },
       { type: 'separator' as const }, { role: 'quit' as const },
     ] }] : []),
@@ -126,9 +126,9 @@ function menu(): Menu {
       cmd('New Story', 'new-story', 'Shift+CmdOrCtrl+N'),
       { type: 'separator' },
       cmd('Import Files…', 'import'),
-      cmd('Export…', 'go:project/export', 'CmdOrCtrl+E'),
+      cmd('Export…', 'settings:export', 'CmdOrCtrl+E'),
       { type: 'separator' },
-      cmd('Show Database in ' + (isMac ? 'Finder' : 'Folder'), 'reveal-data'),
+      cmd('Show Project File in ' + (isMac ? 'Finder' : 'Folder'), 'reveal-data'),
       { type: 'separator' },
       isMac ? { role: 'close' } : { role: 'quit' },
     ] },
@@ -150,13 +150,13 @@ function menu(): Menu {
       ...(app.isPackaged ? [] : [{ type: 'separator' as const }, { role: 'reload' as const }, { role: 'toggleDevTools' as const }]),
     ] },
     { label: 'Go', submenu: [
-      cmd('Write', 'go:write', 'CmdOrCtrl+1'), cmd('Plan', 'go:story', 'CmdOrCtrl+2'), cmd('World', 'go:world', 'CmdOrCtrl+3'),
+      cmd('Home', 'go:home', 'CmdOrCtrl+1'), cmd('Outline', 'go:outline', 'CmdOrCtrl+2'), cmd('World', 'go:world', 'CmdOrCtrl+3'),
       cmd('Timeline', 'go:timeline', 'CmdOrCtrl+4'), cmd('Questions', 'go:questions', 'CmdOrCtrl+5'),
       { type: 'separator' },
       cmd('Previous Scene', 'scene:prev', 'Alt+CmdOrCtrl+Up'), cmd('Next Scene', 'scene:next', 'Alt+CmdOrCtrl+Down'),
       { type: 'separator' },
       cmd('Back', 'back', 'CmdOrCtrl+['), cmd('Forward', 'forward', 'CmdOrCtrl+]'),
-      ...(isMac ? [] : [{ type: 'separator' as const }, cmd('Settings', 'go:project/ai', 'Ctrl+,')]),
+      ...(isMac ? [] : [{ type: 'separator' as const }, cmd('Settings', 'settings', 'Ctrl+,')]),
     ] },
     { role: 'windowMenu' },
     { role: 'help', submenu: [

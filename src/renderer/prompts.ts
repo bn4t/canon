@@ -332,10 +332,10 @@ export function directorSystem(s: State, context: string) {
 
 /** What the assistant sees of the current screen, plus records the author pinned to the context. */
 export function screenContext(s: State, route: string, pinned: string[] = []) {
-  const [view, a, b] = route.split('/')
+  const [view, a, b] = route.split('/').map(decodeURIComponent)
   const out: string[] = []
-  if (view === 'write') {
-    const sc = get(s, b, 'scene'), st = get(s, a, 'story')
+  if (view === 'scene' || view === 'write') {
+    const sc = get(s, view === 'scene' ? a : b, 'scene'), st = get(s, sc?.story ?? a, 'story')
     if (st) out.push(`Story "${st.title}" [${st.id}]`)
     if (sc) {
       const notes = notesFor(s, sc.id).filter(n => !n.done).map(n => `- ${n.quote ? `“${n.quote}”: ` : ''}${n.text}`)
@@ -343,6 +343,8 @@ export function screenContext(s: State, route: string, pinned: string[] = []) {
     }
   } else if (view === 'story') { const st = get(s, a, 'story'); if (st) out.push(storyOutline(s, st)) }
   else if (view === 'world') { const e = get(s, a, 'entity'); out.push(e ? entityText(s, e) : 'The world index.') }
+  else if (view === 'home') out.push('Home: the project overview (stories, progress, what needs attention).')
+  else if (view === 'knowledge') out.push('The knowledge lens of the timeline: who knows each fact, and when.')
   else if (view === 'timeline') { const f = get(s, a, 'fact'); out.push('The timeline (events × stories) and the knowledge grid.' + (f ? `\nSelected: ${nameOf(s, f.id)} [${f.id}]: ${f.detail}` : '')) }
   else if (view === 'questions') out.push('The questions inbox: open questions, plot holes, contradictions.')
   else out.push(view || 'home')

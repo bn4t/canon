@@ -1,0 +1,82 @@
+/* Timeline: one table (events down, stories or knowers across), two lenses, one inspector. */
+.tl-page { flex: 1; display: flex; align-items: flex-start; min-height: 0 }
+.tl-main { flex: 1; min-width: 0; padding: 22px 24px 48px; display: grid; gap: 12px; align-content: start; grid-template-columns: minmax(0, 1fr) }
+.tl-table { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow-x: auto; box-shadow: var(--shadow-sm) }
+.tl-row { display: grid; align-items: stretch; border-top: 1px solid var(--line); min-width: fit-content; position: relative }
+.tl-row > div { padding: 9px 10px; min-width: 0 }
+.tl-row:not(.tl-head):hover { background: color-mix(in srgb, var(--accent-tint) 55%, transparent) }
+.tl-row.sel, .tl-row.sel:hover { background: var(--accent-tint) }
+.tl-head { background: var(--bg); border-top: 0 }
+.tl-head > div { font: 500 12px/1.3 var(--f-ui); color: var(--muted) }
+.tl-head a { text-decoration: none; display: block; min-width: 0 }
+.tl-head b { display: block; font: 500 13.5px/1.3 var(--f-prose); color: var(--ink) }
+.tl-head a:hover b { color: var(--accent-ink) }
+.tl-grp { display: flex; gap: 8px; padding: 8px 12px; background: var(--side); border-top: 1px solid var(--line); font: 500 11.5px/1.3 var(--f-ui); color: var(--muted); min-width: fit-content }
+.tl-grp span + span { font-weight: 400 }
+.tl-drag { color: var(--faint); display: flex; justify-content: center; padding-top: 12px !important }
+.tl-row[draggable=true] .tl-drag { cursor: grab }
+.tl-row.dragging { opacity: .45 }
+.tl-row.over-before { box-shadow: inset 0 2px 0 var(--accent) }
+.tl-row.over-after { box-shadow: inset 0 -2px 0 var(--accent) }
+.tl-ev { display: grid; gap: 2px; align-content: start }
+.tl-ev .top { display: flex; align-items: center; gap: 8px; min-width: 0 }
+.tl-ev b { font-weight: 500 }
+.tl-cz { font-size: 11.5px; color: var(--muted); line-height: 1.4 }
+.ecode { font: 500 11.5px/1 var(--f-mono); color: var(--muted); background: var(--sunk); border-radius: 4px; padding: 3px 5px; flex: none; white-space: nowrap }
+.ecode.on, .tl-row.sel .ecode { background: var(--accent-soft); color: var(--accent-ink) }
+.tl-qb { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 9px; background: var(--warn-soft); color: var(--warn); font: 600 11px/1 var(--f-ui); text-decoration: none; flex: none; white-space: nowrap }
+.tl-cell { transition: background .1s }
+.tl-cell.drop { background: var(--accent-tint); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent) }
+.tl-s { display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 7px; border-radius: 6px; background: var(--sunk); font-size: 12px; margin-bottom: 4px; text-decoration: none; color: var(--ink); border-left: 3px solid var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0 }
+.tl-s:hover { background: var(--hover) }
+.tl-s.felt { background: var(--panel); border: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--line2)); border-left: 3px dashed color-mix(in srgb, var(--accent) 70%, transparent) }
+.tl-s span { font: 11px var(--f-mono); color: var(--muted); flex: none }
+.tl-s.sw { width: 26px; padding: 0; margin: 0; height: 16px }
+.tl-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; font-size: 12.5px; color: var(--muted) }
+.tl-legend.k { gap: 12px; color: var(--ink2) }
+.tl-legend.k > span:last-child { color: var(--muted) }
+.tl-rl { font-size: 12.5px; color: var(--ink); text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.tl-rl span { font: 11px var(--f-mono); color: var(--muted); margin-right: 5px }
+a.tl-rl:hover { color: var(--accent-ink) }
+.tl-rl.none { color: var(--muted) }
+.tl-kc { display: grid; gap: 3px; align-content: start; justify-items: start }
+
+/* inspector */
+.tl-insp { flex: 0 0 340px; width: 340px; align-self: stretch; border-left: 1px solid var(--line); background: var(--panel); padding: 14px 18px 40px; display: grid; gap: 14px; align-content: start; grid-template-columns: minmax(0, 1fr);
+  position: sticky; top: var(--bar-h); max-height: calc(100vh - var(--bar-h)); min-height: calc(100vh - var(--bar-h)); overflow-y: auto }
+.tl-title { font: 400 24px/1.22 var(--f-prose); padding: 2px 4px; margin: 0 -4px }
+.tl-detail { color: var(--ink2); line-height: 1.5; padding: 2px 4px; margin: -6px -4px 0 }
+.tl-f { display: grid; gap: 6px; align-content: start }
+.tl-f a { text-decoration: none }
+.tl-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center }
+.tl-kr { display: flex; align-items: flex-start; gap: 8px }
+.tl-kr b { font-weight: 500 }
+.tl-in { display: flex; align-items: center; gap: 4px }
+.tl-in .tl-s { margin: 0 }
+.tl-q { display: grid; gap: 4px; justify-items: start; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line); text-decoration: none }
+.tl-q:hover { border-color: var(--line2); background: var(--bg) }
+.clip2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; line-height: 1.4 }
+.tl-hist > summary { padding: 4px 0 }
+.tl-hist[open] > summary { margin-bottom: 8px }
+@media (max-width: 1180px) { .tl-insp { flex-basis: 300px; width: 300px } }
+
+/* what someone knows: pills, the shared editor */
+.kav { display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; color: #fff; font-weight: 600; line-height: 1; flex: none }
+.kst { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 11px; font: 500 12px/1 var(--f-ui); white-space: nowrap; border: 1px solid transparent; background: var(--sunk); color: var(--ink2); max-width: 100%; overflow: hidden; text-overflow: ellipsis }
+.kst.knows { background: var(--ok-soft); color: var(--ok) }
+.kst.almost { background: var(--warn-soft); color: var(--warn) }
+.kst.believes { background: var(--del-soft); color: var(--del) }
+.kst.never { background: var(--sunk); color: var(--ink2) }
+.kst.unset { background: var(--panel); border-color: var(--line2); color: var(--muted) }
+button.kst:hover { filter: brightness(.97) }
+.kst-set { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 11px; border: 1px dashed var(--line2); color: var(--muted); font: 500 12px/1 var(--f-ui); background: transparent; transition: opacity .1s }
+.kst-set:hover { color: var(--ink); border-color: var(--faint) }
+.tl-row.k .kst-set:not(.has):not(:focus-visible) { opacity: 0 }
+.tl-row.k:hover .kst-set:not(.has):not(:focus-visible) { opacity: 1 }
+.knote { font-size: 12px; color: var(--muted); line-height: 1.35 }
+.kedit { width: 330px; padding: 8px; display: grid; gap: 10px }
+.kedit b { font-weight: 600 }
+.kopts { display: flex; flex-wrap: wrap; gap: 5px }
+.kopts .kst { height: 26px; border-radius: 13px; padding: 0 10px }
+.kopts .kst.on { border-color: currentColor; box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 18%, transparent) }
+.kopts .kst.unset.on { border-color: var(--ink2); color: var(--ink) }

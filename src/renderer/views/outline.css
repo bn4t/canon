@@ -1,0 +1,104 @@
+/* The story outline: header with the story's properties, a board in beat columns, a list, story details. */
+.ol { display: flex; flex-direction: column; flex: 1; min-height: 0 }
+.ol-crumb { display: flex; align-items: center; gap: 8px; min-width: 0 }
+.ol-crumb b { font-weight: 500 }
+.ol-crumb .lbl { font-weight: 400; flex: none }
+.ol-pad { padding: 14px 32px 0 }
+
+/* header */
+.ol-head { padding: 26px 32px 0; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) }
+.ol-title { font: 400 34px/1.15 var(--f-prose); letter-spacing: -.01em; border: 0; background: transparent; outline: none; padding: 0; width: 100%; color: var(--ink) }
+.ol-title::placeholder, .ol-prem::placeholder { color: var(--faint) }
+.ol-prem { font: 400 17px/1.45 var(--f-prose); color: var(--ink2); border: 0; background: transparent; outline: none; padding: 2px 6px; margin: 0 -6px; resize: none; field-sizing: content; max-width: 772px; border-radius: 6px }
+.ol-prem:hover { background: var(--hover) }
+.ol-prem:focus { background: var(--accent-tint) }
+.ol-sub { font-size: 13px; color: var(--muted) }
+.ol-props { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px }
+.ol-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; border-radius: 7px; background: var(--panel); border: 1px solid var(--line2); color: var(--ink); font: 500 12.5px/1 var(--f-ui); white-space: nowrap; max-width: 280px; overflow: hidden; text-overflow: ellipsis; box-shadow: var(--shadow-sm) }
+button.ol-chip:hover { border-color: color-mix(in srgb, var(--ink) 20%, var(--line2)) }
+.ol-chip .k { color: var(--muted); font-weight: 400 }
+.ol-chip .icon { color: var(--muted) }
+.ol-chip.on { background: var(--accent-soft); border-color: transparent; color: var(--accent-ink); box-shadow: none }
+.ol-chip .x { font-size: 14px; padding: 0 2px; margin-right: -4px; color: inherit; opacity: .7 }
+.ol-chip-wrap { display: inline-flex; align-items: center }
+.ol-chip-wrap > .x { margin-left: -2px }
+.ol-q .inline { width: 110px; font: inherit; font-weight: 400 }
+.ol-q:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft) }
+.ol-q .inline:focus { background: transparent }
+.ol-pick { width: 260px; display: grid }
+.ol-pick-h { display: block; padding: 6px 10px 2px }
+.ol-target { width: 240px; padding: 6px }
+
+/* the Assist menu's header and footer */
+.ol-menu-h { display: flex; align-items: center; gap: 8px; padding: 6px 10px 8px }
+.ol-menu-f { display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--line); margin: 6px 4px 0; padding: 8px 6px 4px; font-size: 12px; color: var(--muted) }
+.ol-model { border: 0; background: none; padding: 0; color: var(--muted); font: inherit; text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 2px; white-space: nowrap }
+.ol-model:hover { color: var(--accent) }
+
+/* story details */
+.ol-details { margin: 16px 32px 0; border: 1px solid var(--line2); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow-sm); display: grid; grid-template-columns: minmax(0, 1fr); animation: pop .14s ease-out }
+.ol-details-h { display: flex; align-items: center; gap: 8px; padding: 12px 14px 0 18px }
+.ol-details-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 28px; padding: 12px 18px 16px }
+@media (max-width: 1100px) { .ol-details-grid { grid-template-columns: minmax(0, 1fr) } }
+.ol-details-f { display: flex; align-items: center; gap: 8px; padding: 10px 14px 10px 18px; border-top: 1px solid var(--line); background: var(--bg); border-radius: 0 0 14px 14px }
+.ol-field { display: grid; gap: 4px }
+.ol-field .hint, .ol-details .hint { font-size: 12px; color: var(--muted) }
+.ol-beats { display: grid; gap: 4px; margin-top: 6px; justify-items: start }
+.ol-beat { display: flex; align-items: center; gap: 4px; width: 100%; padding: 3px 4px 3px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg) }
+.ol-beat:focus-within { border-color: var(--accent) }
+.ol-beat .n { font: 11px var(--f-mono); color: var(--faint); width: 14px; flex: none }
+.ol-beat .inline { flex: 1; font-weight: 500; padding: 3px 4px }
+.ol-beat .inline:focus { background: transparent }
+.ol-beat .icon-btn { opacity: 0 } .ol-beat:hover .icon-btn, .ol-beat .icon-btn:focus-visible { opacity: 1 }
+.ol-beat .icon-btn:disabled { visibility: hidden }
+
+/* the board */
+.ol-board { flex: 1; display: grid; gap: 12px; padding: 18px 32px 32px; align-items: start; overflow-x: auto }
+.ol-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 120px; border-radius: 10px; transition: background .1s }
+.ol-col.over { background: var(--accent-tint) }
+.ol-colh { display: flex; align-items: center; gap: 6px; padding: 0 2px 4px; border-bottom: 2px solid var(--line2) }
+.ol-colh b { font-weight: 600; flex: 1; min-width: 0 }
+.ol-colh .lbl { font-weight: 400; flex: none }
+.ol-flow { padding: 18px 32px 32px }
+.ol-flow-in { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 12px; align-items: start }
+.ol-card { position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 6px; padding: 12px 13px 11px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); box-shadow: var(--shadow-sm); text-decoration: none; color: inherit; transition: border-color .12s, box-shadow .12s }
+.ol-card:hover { border-color: color-mix(in srgb, var(--ink) 20%, var(--line2)); box-shadow: var(--shadow) }
+.ol-card.over { box-shadow: 0 -3px 0 var(--accent), var(--shadow-sm) }
+.ol-card .stripe { position: absolute; left: 0; top: 0; right: 0; height: 3px }
+.ol-card h4 { font: 500 16.5px/1.25 var(--f-prose) }
+.ol-card p { font-size: 12.5px; line-height: 1.5; color: var(--ink2); display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden }
+.ol-card p.ex { font: italic 13.5px/1.5 var(--f-prose); color: var(--muted) }
+.ol-card p.none { color: var(--muted); font-style: italic }
+.ol-card-top { display: flex; align-items: center; gap: 6px; justify-content: space-between }
+.ol-lock { display: inline-flex; align-items: center; gap: 3px; font: 500 11px/1 var(--f-ui); color: var(--muted) }
+.ol-name .ol-lock { margin-left: 6px; vertical-align: -1px }
+.ol-ft { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 2px }
+.ol-pill { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 10px; font: 500 11.5px/1 var(--f-ui); background: var(--sunk); color: var(--ink2); white-space: nowrap }
+.ol-pill.draft { background: var(--warn-soft); color: var(--warn) }
+.ol-pill.revised { background: var(--ins-soft); color: var(--ins) }
+.ol-pill.final { background: var(--ok-soft); color: var(--ok) }
+.wc { font-size: 11.5px; color: var(--muted) }
+.wc.warn, .warn-text { color: var(--warn) } .wc.ok { color: var(--ok) } .wc.ai { color: var(--accent-ink) }
+.ol-add { height: 34px; border: 1px dashed var(--line2); border-radius: 10px; background: transparent; color: var(--muted); font: 500 12.5px/1 var(--f-ui); flex: none }
+.ol-add:hover, .ol-add.over { color: var(--ink); border-color: var(--faint); background: var(--panel) }
+.ol-flow-in .ol-add { height: auto; min-height: 120px }
+.ol-ghost { display: flex; flex-direction: column; gap: 6px; padding: 12px 13px; border-radius: 12px; background: var(--accent-tint); border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent) }
+.ol-sugg { display: flex; align-items: center; gap: 5px; font: 500 11.5px/1.3 var(--f-ui); color: var(--accent-ink) }
+.ol-ghost h4 { font: 500 16.5px/1.25 var(--f-prose) }
+.ol-ghost p { font-size: 12.5px; color: var(--ink2) }
+.ol-ghost p.why { font-size: 12px; color: var(--muted) }
+
+/* the list */
+.ol-list { padding: 18px 32px 32px }
+.ol-table td { font-size: 13px }
+.ol-table tr.click { cursor: default }
+.ol-table tr.over td { box-shadow: inset 0 2px 0 var(--accent) }
+.ol-name { min-width: 160px }
+.ol-name b { font: 500 15px/1.3 var(--f-prose) }
+.ol-num { font-variant-numeric: tabular-nums; white-space: nowrap }
+.ol-handle { width: 24px; color: var(--faint); padding-right: 0 !important }
+.ol-table tr:hover .ol-handle { color: var(--muted) }
+
+/* empty */
+.ol-empty { padding: 28px 32px 48px }
+.ol-empty-card { max-width: 560px; display: grid; gap: 12px; padding: 24px; border: 1px dashed var(--line2); border-radius: 14px; background: var(--panel) }

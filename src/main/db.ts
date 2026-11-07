@@ -40,6 +40,7 @@ export interface ChangeSet {
   changes: { id: string; kind?: string; data: unknown }[]
 }
 export interface Version { seq: number; label: string; at: number; prev: unknown }
+export interface Step { group: string; label: string; at: number; ids: string[] }
 
 export class Store {
   readonly db: DatabaseSync
@@ -131,6 +132,14 @@ export class Store {
     const rows = this.db.prepare('SELECT seq, label, at, prev FROM history WHERE record = ? AND undone = 0 ORDER BY seq DESC LIMIT ?')
       .all(record, limit) as { seq: number; label: string; at: number; prev: string | null }[]
     return rows.map(r => ({ seq: Number(r.seq), label: r.label, at: Number(r.at), prev: r.prev === null ? null : JSON.parse(r.prev) }))
+  }
+
+  /** The latest undo steps across the project (newest first), for Home's "Recent changes". */
+  recent(limit = 8): Step[] {
+    if (!(limit > 0 && limit <= 100)) limit = 8
+    const rows = this.db.prepare(`SELECT grp, MAX(label) AS label, MAX(at) AS at, MAX(seq) AS seq, group_concat(DISTINCT record) AS ids FROM history
+      WHERE undone = 0 AND kind NOT IN ${UNTRACKED} GROUP BY grp ORDER BY seq DESC LIMIT ?`).all(limit) as { grp: string; label: string; at: number; ids: string }[]
+    return rows.map(r => ({ group: r.grp, label: r.label, at: Number(r.at), ids: String(r.ids || '').split(',').filter(Boolean) }))
   }
 
   /** Copy the database into dir (one file per start) and keep the newest `keep`. */

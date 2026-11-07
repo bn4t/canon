@@ -32,10 +32,10 @@ export const QKINDS: { id: QKind; label: string; many: string }[] = [
 ]
 export type GuideKind = 'style' | 'rule' | 'banned' | 'check'
 export const GUIDE_KINDS: { id: GuideKind; label: string; hint: string }[] = [
-  { id: 'style', label: 'Style', hint: 'How to write: tone, voice, conventions. Sent with builds in its scope.' },
-  { id: 'rule', label: 'Rule', hint: 'A short instruction builds and checks must obey.' },
-  { id: 'banned', label: 'Banned phrases', hint: 'One per line. Flagged in the text and sent to builds.' },
-  { id: 'check', label: 'Check instructions', hint: 'Replaces the default continuity-check instructions.' },
+  { id: 'style', label: 'Style', hint: 'How to write: tone, voice, conventions. Sent with every draft in its scope.' },
+  { id: 'rule', label: 'Rule', hint: 'A short instruction drafts and checks must follow.' },
+  { id: 'banned', label: 'Banned phrases', hint: 'One per line. Flagged in the text and kept out of drafts.' },
+  { id: 'check', label: 'Check instructions', hint: 'Replaces the default instructions for Check continuity.' },
 ]
 export type Severity = 'critical' | 'error' | 'warning' | 'note'
 
@@ -45,7 +45,9 @@ interface Data {
     emDashCheck?: boolean; scratch?: string; target?: number; deadline?: string; sessionTarget?: number }
   entity: { type: EntityType; name: string; aliases: string[]; summary: string; fields: Record<string, string>; notes: string; relations: { to: string; label: string }[] }
   /** Something true. With `at` it is an event: it happens at that place in world order, caused by earlier events. */
-  fact: { text: string; detail: string; at?: number; causes: string[]; knows: Record<string, KCell> }
+  fact: { text: string; detail: string; at?: number; causes: string[]; knows: Record<string, KCell>
+    /** An event's stable number (E3): given once when it gets a date, kept when events move. */
+    n?: number }
   question: { type: QKind; text: string; about: string[]; options: { title: string; detail: string; proposal?: Proposal }[]; answer: string; by: 'you' | 'ai' | 'check'; dismissed?: boolean; at: string }
   story: { title: string; order: number; pov?: string; form: 'prose' | 'documents'; premise: string; beats: string[]; target?: number }
   scene: { story: string; order: number; title: string; card: string; wants: string; mustLand: string[]; beat: string; cast: string[]; links: Record<string, Link>
@@ -103,7 +105,8 @@ export const allScenes = (s: State) => stories(s).flatMap(st => scenesOf(s, st.i
 export const events = (s: State) => list(s, 'fact').filter(f => f.at !== undefined).sort((a, b) => a.at! - b.at!)
 /** Facts without a time: secrets, states of the world. */
 export const plainFacts = (s: State) => list(s, 'fact').filter(f => f.at === undefined).sort((a, b) => a.text.localeCompare(b.text))
-export const eventCode = (s: State, id: string) => { const i = events(s).findIndex(e => e.id === id); return i < 0 ? '' : 'E' + (i + 1) }
+export const eventCode = (s: State, id: string) => { const f = get(s, id, 'fact'); return !f || f.at === undefined ? '' : 'E' + (f.n ?? events(s).indexOf(f) + 1) }
+const nextN = (recs: Record<string, AnyRec>) => Object.values(recs).reduce((m, r) => (r.kind === 'fact' && r.n ? Math.max(m, r.n) : m), 0) + 1
 export const typesOf = (s: State): Record<string, TypeDef> => project(s).types || DEFAULT_TYPES
 export const typeIds = (s: State) => { const ids = Object.keys(typesOf(s)); for (const e of list(s, 'entity')) if (!ids.includes(e.type)) ids.push(e.type); return ids }
 export const typeDef = (s: State, id: string): TypeDef => typesOf(s)[id] || { label: id, one: id, fields: [] }
@@ -205,6 +208,7 @@ export function update<K extends Kind>(id: string, fn: (d: R<K>) => void) {
   if (!cur) return
   const d = structuredClone(cur) as unknown as R<K>
   fn(d)
+  if (d.kind === 'fact') { const f = d as unknown as Fact; if (f.at !== undefined && !f.n) f.n = nextN(state.recs) }
   state = { ...state, recs: { ...state.recs, [id]: d as unknown as AnyRec } }
   enqueue(id, { kind: d.kind, data: strip(d as unknown as AnyRec) })
   if (d.kind === 'scene') trackWords()
@@ -212,6 +216,7 @@ export function update<K extends Kind>(id: string, fn: (d: R<K>) => void) {
 }
 export function create<K extends Kind>(kind: K, data: Data[K], id = uid(kind)): string {
   const r = { ...structuredClone(data), id, kind } as unknown as AnyRec
+  if (r.kind === 'fact' && r.at !== undefined && !r.n) r.n = nextN(state.recs)
   state = { ...state, recs: { ...state.recs, [id]: r } }
   enqueue(id, { kind, data: strip(r) })
   emit()
@@ -272,9 +277,22 @@ export async function load() {
     const legacy: State['legacy'] = []
     for (const r of recs) if (old(r)) legacy.push({ id: r.id, kind: r.kind, name: r.kind === 'entity' ? String(r.data.name) : undefined }); else m[r.id] = { ...r.data, id: r.id, kind: r.kind } as unknown as AnyRec
     set({ loaded: true, recs: m, legacy })
+    numberEvents()
   } catch (e) {
     set({ loaded: true, error: String(e) })
   }
+}
+
+/** Events from before stable numbering keep their current position as their number (a baseline write: not an undo step). */
+function numberEvents() {
+  let n = nextN(state.recs)
+  const recs = { ...state.recs }
+  const changes: { kind: Kind; id: string; data: Record<string, unknown> }[] = []
+  for (const f of events(state)) if (!f.n) { const r = { ...f, n: n++ }; recs[f.id] = r; changes.push({ kind: 'fact', id: f.id, data: strip(r) }) }
+  if (!changes.length) return
+  state = { ...state, recs }
+  emit()
+  fetch('/api/records', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ group: newGroup(), label: 'Number events', baseline: true, changes }) })
 }
 
 /** Delete the hidden records of an older version (one undoable step); interviews follow their character by name. */

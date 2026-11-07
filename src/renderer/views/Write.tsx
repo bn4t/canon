@@ -1,472 +1,703 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import './editor.css'
 import {
-  update, create, remove, tx, get, list, getState, stories, scenesOf, entities, words, nextOrder, showToast, applyProposal, isApplied, pushSnapshot,
-  project, nameOf, sessionWords, newScene, newNote, newQuestion, typeIds, typeDef, STATUSES, LABELS,
-  type State, type Story, type Scene, type Proposal, type Severity, type SceneStatus, type Link,
+  update, create, remove, tx, get, getState, scenesOf, entities, words, showToast, project, nameOf, sessionWords, newNote, typeIds, typeDef, eventCode, notesFor,
+  STATUSES, LABELS, type State, type Story, type Scene, type Note, type SceneStatus, type MetaField,
 } from '../store.ts'
-import { complete, completeJSON } from '../ai.ts'
-import { buildScene, inputHash, directPassage, deriveCard, critiqueScene, continuityCheck, suggestScenes, normalizeProposal } from '../prompts.ts'
+import { useAI, aiReady } from '../ai.ts'
 import { diffWords, diffText } from '../diff.ts'
-import { Area, Popover, useJob, JobStatus, Diff, go, replaceRoute, Bar, Icon, MOD, stored, store } from '../ui.tsx'
-import { RecordPicker, hrefOf } from './shared.tsx'
-
-// ---------------- pending inline edits (tracked changes not yet accepted) ----------------
-
-const pending = new Map<string, Proposal[]>()
-const subs = new Set<() => void>()
-let ver = 0
-const bump = () => { ver++; subs.forEach(f => f()) }
-export function addPending(p: Proposal) { pending.set(p.id!, [...(pending.get(p.id!) || []), p]); bump() }
-const dropPending = (p: Proposal) => { pending.set(p.id!, (pending.get(p.id!) || []).filter(x => x !== p)); bump() }
-const usePendingVer = () => useSyncExternalStore(f => (subs.add(f), () => subs.delete(f)), () => ver)
-
-interface Hunk { p: Proposal; at: number; reject: () => void; who: string }
-/** Every open edit for a scene: local ones plus "edit" proposals in Director chats. */
-function hunksFor(s: State, sc: Scene): Hunk[] {
-  const out: Hunk[] = (pending.get(sc.id) || []).map(p => ({ p, at: sc.prose.indexOf(p.find!), reject: () => dropPending(p), who: p.why ? 'Assistant' : 'Rewrite' }))
-  for (const c of list(s, 'chat')) c.messages.forEach((m, i) => (m.proposals || []).forEach(p => {
-    if (p.op === 'edit' && p.id === sc.id && !isApplied(s, p)) out.push({ p, at: sc.prose.indexOf(p.find!), who: 'Assistant', reject: () => update<'chat'>(c.id, x => { x.messages[i].proposals = x.messages[i].proposals!.filter(y => JSON.stringify(y) !== JSON.stringify(p)) }) })
-  }))
-  // Drop edits whose passage is gone; keep the first of any overlapping pair.
-  const ok = out.filter(h => h.p.find && h.at >= 0).sort((a, b) => a.at - b.at)
-  return ok.filter((h, i) => i === 0 || h.at >= ok[i - 1].at + ok[i - 1].p.find!.length)
-}
-const accept = (h: Hunk) => { tx('Accept change', () => applyProposal(h.p)); if (pending.get(h.p.id!)?.includes(h.p)) dropPending(h.p) }
-
-// ---------------- AI operations (read fresh state; safe to run in batches) ----------------
-
-type Built = 'empty' | 'manual' | 'built' | 'stale'
-export const builtState = (sc: Scene, hash?: string): Built => (!sc.prose.trim() ? 'empty' : !sc.builtHash ? 'manual' : hash && hash !== sc.builtHash ? 'stale' : 'built')
-export const BUILT: Record<Built, { label: string; cls: string; hint: string }> = {
-  empty: { label: 'No text', cls: '', hint: 'Nothing written or built yet' },
-  manual: { label: 'Hand-written', cls: '', hint: 'Written or imported, not built from the plan' },
-  built: { label: 'Built', cls: 'ok', hint: 'Built from the current plan and canon' },
-  stale: { label: 'Stale', cls: 'warn', hint: 'The plan or canon changed since this was built' },
-}
-
-/** Input hashes per scene of a story, recomputed (debounced) when the canon changes. */
-export function useHashes(s: State, storyId?: string) {
-  const [h, setH] = useState<Record<string, string>>({})
-  useEffect(() => {
-    let live = true
-    const t = setTimeout(async () => {
-      const st = get(s, storyId, 'story')
-      if (!st) return
-      const out: Record<string, string> = {}
-      for (const sc of scenesOf(s, st.id)) out[sc.id] = await inputHash(s, st, sc)
-      if (live) setH(out)
-    }, 400)
-    return () => { live = false; clearTimeout(t) }
-  }, [s, storyId])
-  return h
-}
-
-const fresh = (id: string) => { const s = getState(); const sc = get(s, id, 'scene')!; return { s, sc, st: get(s, sc.story, 'story')! } }
-
-export async function buildOne(id: string, signal: AbortSignal, onText?: (t: string) => void) {
-  const { s, sc, st } = fresh(id)
-  const p = buildScene(s, st, sc)
-  const hash = await inputHash(s, st, sc)
-  const out = (await complete('build', p.system, p.prompt, onText, signal)).trim()
-  if (!out) throw new Error('The model returned no text.')
-  tx(`Build “${sc.title}”`, () => update<'scene'>(id, x => { pushSnapshot(x); x.prose = out; x.builtHash = hash; if (!x.status || x.status === 'todo') x.status = 'draft' }))
-}
-
-export async function deriveOne(id: string, signal: AbortSignal) {
-  const { s, sc, st } = fresh(id)
-  const d = await completeJSON<{ title?: string; beat?: string; card?: string; wants?: string; mustLand?: string[]; links?: Record<string, Link>; cast?: string[] }>('assist', deriveCard(s, st, sc), signal)
-  tx(`Derive plan for “${d.title || sc.title}”`, () => update<'scene'>(id, x => {
-    if (d.title && (!x.title.trim() || /^(Scene \d+|New scene)$/.test(x.title))) x.title = d.title
-    if (d.beat && st.beats.includes(d.beat)) x.beat = d.beat
-    if (d.card) x.card = d.card
-    if (d.wants) x.wants = d.wants
-    if (d.mustLand?.length) x.mustLand = d.mustLand
-    for (const [k, v] of Object.entries(d.links || {})) if (get(s, k, 'fact') && (v === 'on' || v === 'felt')) x.links[k] = v
-    x.cast = [...new Set([...x.cast, ...(d.cast || []).filter(e => get(s, e, 'entity'))])]
-  }), false)
-}
-
-/** Rewrite prose[start:end] following a direction; the result arrives as a tracked change. */
-export async function direct(id: string, start: number, end: number, direction: string, signal: AbortSignal) {
-  const { s, sc, st } = fresh(id)
-  const p = directPassage(s, st, sc, start, end, direction)
-  const out = (await complete('build', p.system, p.prompt, undefined, signal)).trim()
-  addPending({ op: 'edit', id, find: sc.prose.slice(start, end), replace: out })
-}
-
-/** Locate a quoted passage in prose. ponytail: exact, then case-insensitive; paraphrased quotes aren't found. */
-export function locate(prose: string, quote?: string): [number, number] | undefined {
-  const q = quote?.trim().replace(/^["“]|["”]$/g, '')
-  if (!q) return
-  let i = prose.indexOf(q)
-  if (i < 0) i = prose.toLowerCase().indexOf(q.toLowerCase())
-  return i < 0 ? undefined : [i, i + q.length]
-}
-
-export async function critique(id: string, signal: AbortSignal) {
-  const { s, sc, st } = fresh(id)
-  const out = await completeJSON<{ topic?: string; text: string; quote?: string }[]>('check', critiqueScene(s, st, sc), signal)
-  tx('Critique scene', () => {
-    for (const n of list(getState(), 'note')) if (n.scene === id && n.by === 'ai' && !n.done) remove(n.id) // replace the previous open critique
-    for (const n of out) create('note', newNote(id, { by: 'ai', topic: n.topic, text: n.text, quote: n.quote || undefined }))
-  }, false)
-  return out.length
-}
-
-export async function continuity(storyId: string, signal: AbortSignal) {
-  const s = getState(), st = get(s, storyId, 'story')!
-  const out = await completeJSON<{ severity?: Severity; scene?: number; quote?: string; problem: string; fix?: string; canon?: 'hole' | 'contradiction'; about?: string[] }[]>('check', continuityCheck(s, st), signal)
-  const ids = scenesOf(getState(), storyId).map(x => x.id)
-  let notes = 0, qs = 0
-  tx('Continuity check', () => {
-    for (const n of list(getState(), 'note')) if (ids.includes(n.scene) && n.by === 'check' && !n.done) remove(n.id)
-    for (const f of out) {
-      if (f.canon) { qs++; create('question', newQuestion({ type: f.canon, text: f.problem, about: (f.about || []).filter(x => getState().recs[x]), by: 'check' })) }
-      else if (f.scene && ids[f.scene - 1]) { notes++; create('note', newNote(ids[f.scene - 1], { by: 'check', severity: (['critical', 'error', 'warning', 'note'] as const).includes(f.severity!) ? f.severity : 'warning', quote: f.quote, text: f.problem, fix: f.fix })) }
-    }
-  }, false)
-  showToast(out.length ? `Continuity check: ${notes} note${notes === 1 ? '' : 's'} on scenes${qs ? `, ${qs} question${qs === 1 ? '' : 's'} about the canon` : ''}` : 'Continuity check: no problems found')
-}
-
-export function newStory() {
-  let id = ''
-  tx('New story', () => { id = create('story', { title: 'Untitled story', order: nextOrder(stories(getState())), form: 'prose', premise: '', beats: [] }) })
-  go('story/' + id)
-}
-export function addScene(st: Story, order?: number) {
-  let id = ''
-  tx('New scene', () => { id = create('scene', newScene(st.id, order ?? nextOrder(scenesOf(getState(), st.id)), { cast: st.pov ? [st.pov] : [] })) })
-  go(`write/${st.id}/${id}`)
-  return id
-}
-export function reorder(scs: Scene[], dragId: string, beforeId?: string) {
-  const ids = scs.map(x => x.id).filter(x => x !== dragId)
-  const at = beforeId ? ids.indexOf(beforeId) : ids.length
-  ids.splice(at < 0 ? ids.length : at, 0, dragId)
-  tx('Reorder scenes', () => ids.forEach((id, i) => { if (get(getState(), id, 'scene')!.order !== i + 1) update<'scene'>(id, x => { x.order = i + 1 }) }))
-}
-function splitAt(sc: Scene, at: number) {
-  const scs = scenesOf(getState(), sc.story), next = scs[scs.findIndex(x => x.id === sc.id) + 1]
-  let id = ''
-  tx('Split scene', () => {
-    id = create('scene', newScene(sc.story, next ? (sc.order + next.order) / 2 : sc.order + 1, { title: sc.title + ' (2)', cast: sc.cast, links: { ...sc.links }, prose: sc.prose.slice(at).trimStart(), status: sc.status, label: sc.label }))
-    update<'scene'>(sc.id, x => { pushSnapshot(x, 'Before split'); x.prose = x.prose.slice(0, at).trimEnd() })
-  })
-  go(`write/${sc.story}/${id}`)
-}
-function mergeNext(sc: Scene) {
-  const scs = scenesOf(getState(), sc.story), next = scs[scs.findIndex(x => x.id === sc.id) + 1]
-  if (!next) return showToast('This is the last scene of the story.')
-  tx(`Merge “${next.title}” into “${sc.title}”`, () => {
-    update<'scene'>(sc.id, x => { pushSnapshot(x, 'Before merge'); x.prose = [x.prose.trimEnd(), next.prose.trim()].filter(Boolean).join('\n\n'); x.cast = [...new Set([...x.cast, ...next.cast])]; x.links = { ...next.links, ...x.links }; x.mustLand = [...x.mustLand, ...next.mustLand].filter(Boolean) })
-    for (const n of list(getState(), 'note')) if (n.scene === next.id) update<'note'>(n.id, y => { y.scene = sc.id })
-    remove(next.id)
-  })
-}
-
-// ---------------- the view ----------------
+import { Area, Popover, useJob, JobStatus, Diff, go, Bar, Icon, MOD, AssistMenu, ConnectPrompt, Spark, askAssistant, ago, useChrome, openSettings, type AssistItem } from '../ui.tsx'
+import { RecordPicker, History, hrefOf } from './shared.tsx'
+import {
+  usePendingVer, hunksFor, accept, acceptAll, rejectAll, builtState, BUILT, useHashes, buildOne, deriveCardChanges, applyCardFill, direct, locate, critique, continuity,
+  splitAt, mergeNext, type Hunk, type CardFill,
+} from '../scenes.ts'
+// Older imports still reach these through the editor module.
+export { addPending, builtState, BUILT, useHashes, buildOne, deriveOne, direct, locate, critique, continuity, newStory, addScene, reorder } from '../scenes.ts'
 
 const labelColor = (l?: string) => (l ? `var(--l-${l})` : 'var(--line2)')
+const plural = (n: number, one: string, many = one + 's') => `${n.toLocaleString()} ${n === 1 ? one : many}`
+const firstName = (name: string) => name.split(' ')[0]
 
-export function WriteView({ s, storyId, sceneId }: { s: State; storyId?: string; sceneId?: string }) {
-  const sts = stories(s)
-  const st = get(s, storyId, 'story') || sts[0]
-  const scs = st ? scenesOf(s, st.id) : []
-  const sc = scs.find(x => x.id === sceneId) || scs[0]
-  useEffect(() => { if (st && sc && (st.id !== storyId || sc.id !== sceneId)) replaceRoute(`write/${st.id}/${sc.id}`) }, [st, sc, storyId, sceneId])
-  if (!st) return <><Bar /><div className="empty"><h2>No stories yet</h2><p>A project holds one or more stories; each story is an ordered run of scenes.</p><button className="btn pri" onClick={newStory}>New story</button></div></>
-  if (!sc) return <><Bar><div className="crumbs grow"><b>{st.title}</b></div></Bar>
-    <div className="empty"><h2>{st.title}</h2><p>No scenes yet. Start writing, or plan the story first and let the assistant suggest scenes.</p>
-      <div className="row"><button className="btn pri" onClick={() => addScene(st)}>Write the first scene</button><a className="btn" href={'#story/' + st.id}>Plan the story</a></div></div></>
-  return <Document key={sc.id} s={s} st={st} sc={sc} scs={scs} />
+/** The scene editor (#scene/<id>). */
+export function SceneView({ s, sceneId }: { s: State; sceneId: string }) {
+  const sc = get(s, sceneId, 'scene'), st = sc && get(s, sc.story, 'story')
+  if (!sc || !st) return <><Bar /><div className="empty"><h2>Not found</h2><p>This scene may have been deleted, or undone.</p><a className="btn" href="#home">Home</a></div></>
+  return <Editor key={sc.id} s={s} st={st} sc={sc} />
 }
 
-function Document({ s, st, sc, scs }: { s: State; st: Story; sc: Scene; scs: Scene[] }) {
+// ---------------- the editor ----------------
+
+type Mode = 'menu' | 'rewrite' | 'comment' | 'ask'
+interface Tool { range: [number, number]; mode: Mode }
+interface Range { k: string; a: number; b: number; cls: string }
+
+function Editor({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
   usePendingVer()
+  const ai = useAI()
+  const ready = aiReady(ai)
+  const chrome = useChrome()
   const job = useJob()
   const hashes = useHashes(s, st.id)
+  const root = useRef<HTMLDivElement>(null), body = useRef<HTMLDivElement>(null), wrap = useRef<HTMLDivElement>(null), back = useRef<HTMLDivElement>(null), floatRef = useRef<HTMLDivElement>(null)
   const area = useRef<HTMLTextAreaElement>(null)
-  const [sel, setSel] = useState<[number, number]>()
+  const caret = useRef(0), down = useRef(false)
+  const [tool, setTool] = useState<Tool>()
   const [live, setLive] = useState('')
   const [focus, setFocus] = useState(false)
-  const [editing, setEditing] = useState(false)
+  const [cur, setCur] = useState(0)
+  const [hot, setHot] = useState<string>()
+  const [flash, setFlash] = useState<[number, number]>()
+  const [history, setHistory] = useState(false)
+  const [compare, setCompare] = useState<{ title: string; before: string; after: string }>()
+  const [fill, setFill] = useState<CardFill>()
+  const [width, setWidth] = useState(1200)
+  const [pos, setPos] = useState<Record<string, number>>({})
   const edit = (fn: (x: Scene) => void) => update<'scene'>(sc.id, fn)
-  const hunks = hunksFor(s, sc)
-  const review = hunks.length > 0 && !editing && !live
-  const built = builtState(sc, hashes[sc.id])
+  const scs = scenesOf(s, st.id), i = scs.findIndex(x => x.id === sc.id)
   const p = project(s)
-  const i = scs.indexOf(sc)
-
-  // Notes and Find ask the editor to select a quoted passage.
-  useEffect(() => {
-    const onSel = (e: Event) => {
-      const at = locate(get(getState(), sc.id, 'scene')!.prose, (e as CustomEvent<string>).detail)
-      if (!at) return showToast('That passage is no longer in the text.')
-      setEditing(true)
-      setTimeout(() => { const t = area.current; if (!t) return; t.focus(); t.setSelectionRange(at[0], at[1]); setSel(at); t.closest('.main')?.scrollTo({ top: t.offsetTop + (at[0] / Math.max(1, t.value.length)) * t.offsetHeight - 200, behavior: 'smooth' }) }, 30)
-    }
-    addEventListener('canon:select', onSel)
-    return () => removeEventListener('canon:select', onSel)
-  }, [sc.id])
-  useEffect(() => { if (!hunks.length) setEditing(false) }, [hunks.length])
-  // Menu: Focus Mode, Previous/Next Scene.
-  useEffect(() => {
-    const onCmd = (e: Event) => {
-      const c = (e as CustomEvent<string>).detail, k = scs.indexOf(sc)
-      if (c === 'focus') setFocus(f => !f)
-      else if (c === 'scene:prev' && k > 0) go(`write/${st.id}/${scs[k - 1].id}`)
-      else if (c === 'scene:next' && k < scs.length - 1) go(`write/${st.id}/${scs[k + 1].id}`)
-    }
-    addEventListener('canon:command', onCmd)
-    return () => removeEventListener('canon:command', onCmd)
-  }, [sc, scs, st.id])
-
-  const run = (cmd: string, arg = '') => {
-    const [a, b] = sel || [0, 0]
-    switch (cmd) {
-      case 'rebuild': return job.run(sc.prose.trim() ? 'Rebuilding from the plan…' : 'Building from the plan…', sig => buildOne(sc.id, sig, setLive)).finally(() => setLive(''))
-      case 'critique': return job.run('Reading the scene as an editor…', async sig => { const n = await critique(sc.id, sig); showToast(`${n} note${n === 1 ? '' : 's'} from the assistant`); dispatchEvent(new CustomEvent('canon:notes')) })
-      case 'check': return job.run('Reading the whole story for continuity…', sig => continuity(st.id, sig))
-      case 'derive': return job.run('Deriving the plan from the text…', sig => deriveOne(sc.id, sig))
-      case 'snapshot': return tx('Take snapshot', () => edit(x => { x.snapshots = [{ text: x.prose, at: new Date().toISOString(), name: arg || `Snapshot ${x.snapshots.filter(t => t.name).length + 1}` }, ...x.snapshots] }))
-      case 'split': return sel || area.current ? splitAt(sc, sel ? a : area.current!.selectionStart) : undefined
-      case 'merge': return mergeNext(sc)
-      case 'comment': return sel ? tx('Add comment', () => { create('note', newNote(sc.id, { quote: sc.prose.slice(a, b), text: arg })) }, false) : showToast('Select a passage to comment on.')
-      case 'direct': return sel && arg ? job.run('Rewriting the passage…', sig => direct(sc.id, a, b, arg, sig)).then(() => setSel(undefined)) : undefined
-      case 'focus': return setFocus(true)
-      case 'suggest': return job.run('Looking for missing scenes…', async sig => {
-        const out = await completeJSON<Proposal[]>('assist', suggestScenes(getState(), st), sig)
-        tx(`Add ${out.length} suggested scenes`, () => out.filter(x => x.op === 'create' && x.kind === 'scene').forEach(x => applyProposal(normalizeProposal(getState(), { ...x, data: { ...x.data, story: st.id, status: 'todo' } }))))
-      })
-    }
-  }
-
-  const editor = (big?: boolean) => (
-    <textarea ref={area} className="prose-area" value={live || sc.prose} readOnly={!!live} aria-label="Scene text" autoFocus={big}
-      placeholder={sc.card.trim() ? 'Write here, or type /rebuild below to render the scene from its plan.' : 'Write here. Or fill in the plan above and type /rebuild.'}
-      onChange={e => edit(x => { x.prose = e.target.value })}
-      onSelect={e => { const t = e.currentTarget; setSel(t.selectionEnd - t.selectionStart > 1 ? [t.selectionStart, t.selectionEnd] : undefined) }} />
-  )
-  const selWords = sel ? words(sc.prose.slice(sel[0], sel[1])) : 0
+  const notes = notesFor(s, sc.id), open = notes.filter(n => !n.done)
+  const hunks = live ? [] : hunksFor(s, sc)
+  const k = Math.min(cur, Math.max(0, hunks.length - 1))
+  const built = builtState(sc, hashes[sc.id])
+  const folded = chrome.assistant || width < 1000
   const w = words(sc.prose)
 
-  if (focus) return <Focus sc={sc} editor={editor(true)} onExit={() => setFocus(false)} />
+  useEffect(() => {
+    const ro = new ResizeObserver(([e]) => setWidth(e.contentRect.width))
+    if (root.current) ro.observe(root.current)
+    return () => ro.disconnect()
+  }, [])
+  // Menu: Focus Mode, Previous/Next Scene; notes and Find ask for a passage to be shown.
+  useEffect(() => {
+    const onCmd = (e: Event) => {
+      const c = (e as CustomEvent<string>).detail
+      if (c === 'focus') setFocus(f => !f)
+      else if (c === 'scene:prev' && i > 0) go('scene/' + scs[i - 1].id)
+      else if (c === 'scene:next' && i < scs.length - 1) go('scene/' + scs[i + 1].id)
+    }
+    const onSel = (e: Event) => { const at = locate(get(getState(), sc.id, 'scene')!.prose, (e as CustomEvent<string>).detail); if (at) setFlash(at); else showToast('That passage is no longer in the text.') }
+    const up = () => { if (down.current) { down.current = false; if (document.activeElement === area.current) readSelection() } }
+    addEventListener('canon:command', onCmd); addEventListener('canon:select', onSel); addEventListener('mouseup', up)
+    return () => { removeEventListener('canon:command', onCmd); removeEventListener('canon:select', onSel); removeEventListener('mouseup', up) }
+  }, [sc.id, i, scs]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Show a passage: highlight it briefly and scroll it into the middle of the window.
+  useEffect(() => {
+    if (!flash) return
+    requestAnimationFrame(() => back.current?.querySelector('[data-a="flash"]')?.scrollIntoView({ block: 'center', behavior: 'smooth' }))
+    const t = setTimeout(() => setFlash(undefined), 1600)
+    return () => clearTimeout(t)
+  }, [flash])
+
+  const readSelection = () => {
+    const t = area.current
+    if (!t) return
+    caret.current = t.selectionStart
+    if (down.current) return
+    const a = t.selectionStart, b = t.selectionEnd
+    if (b - a > 1 && t.value.slice(a, b).trim()) setTool(x => (x && x.range[0] === a && x.range[1] === b ? x : { range: [a, b], mode: 'menu' }))
+    else setTool(undefined)
+  }
+
+  // Highlights drawn behind the text: notes, suggestions, the selection the toolbar works on.
+  const ranges: Range[] = []
+  if (!live) {
+    for (const n of open) { const r = n.quote ? locate(sc.prose, n.quote) : undefined; if (r) ranges.push({ k: 'n:' + n.id, a: r[0], b: r[1], cls: 'bk-note ' + n.by + (hot === 'n:' + n.id ? ' hot' : '') }) }
+    hunks.forEach((h, j) => { if (!h.whole) ranges.push({ k: 'h:' + j, a: h.at, b: h.at + h.p.find!.length, cls: 'bk-sugg' + (j === k ? ' hot' : '') }) })
+    if (tool) ranges.push({ k: 'sel', a: tool.range[0], b: tool.range[1], cls: 'bk-sel' })
+    if (flash) ranges.push({ k: 'flash', a: flash[0], b: flash[1], cls: 'bk-flash' })
+  }
+
+  // Measure where each highlight sits, so margin cards, gutter marks and the toolbar line up with the text.
+  useLayoutEffect(() => {
+    const b = body.current, bk = back.current
+    if (!b || !bk) return
+    const top = b.getBoundingClientRect().top, wr = wrap.current?.getBoundingClientRect()
+    const next: Record<string, number> = { __wrap: (wr?.top ?? top) - top, __w: wr?.width ?? 0, __float: (floatRef.current?.getBoundingClientRect().top ?? top) - top }
+    bk.querySelectorAll<HTMLElement>('[data-a]').forEach(el => { const key = el.dataset.a!; if (!(key in next)) { const r = el.getBoundingClientRect(); next[key] = r.top - top; next['x:' + key] = r.left - (wr?.left ?? 0) } })
+    bk.querySelectorAll<HTMLElement>('[data-z]').forEach(el => { next['z:' + el.dataset.z] = el.getBoundingClientRect().bottom - top })
+    if (JSON.stringify(next) !== JSON.stringify(pos)) setPos(next)
+  })
+
+  const goTo = (j: number) => { const h = hunks[j]; if (!h) return; setCur(j); if (!h.whole) setFlash([h.at, h.at + h.p.find!.length]) }
+  const prev = i > 0 ? scs[i - 1] : undefined, next = i < scs.length - 1 ? scs[i + 1] : undefined
+  const sel = tool ? sc.prose.slice(tool.range[0], tool.range[1]) : ''
+
+  const draft = () => job.run(sc.prose.trim() ? 'Drafting a new version from the card…' : 'Drafting from the card…', async (sig, progress) => {
+    const empty = !sc.prose.trim()
+    const r = await buildOne(sc.id, sig, t => { if (empty) setLive(t); else progress(`Drafting a new version from the card… ${plural(words(t), 'word')}`) })
+    if (r === 'suggested') { setCur(0); showToast('The new draft is a suggestion over your text: compare, then accept or reject it.') }
+  }).finally(() => setLive(''))
+  const fillCard = () => job.run('Reading the text to fill the card…', async sig => {
+    const d = await deriveCardChanges(sc.id, sig)
+    if (!Object.keys(d).length) showToast('The card already says what the text does.'); else setFill(d)
+  })
+  const feedback = () => job.run('Reading the scene as an editor…', async sig => { const n = await critique(sc.id, sig); showToast(n ? `${plural(n, 'note')} in the margin` : 'No notes: the scene holds up.') })
+  const check = () => job.run(`Reading all of “${st.title}” for continuity…`, sig => continuity(st.id, sig))
+  const rewrite = (range: [number, number], dir: string) => { setTool(undefined); job.run('Rewriting the passage…', sig => direct(sc.id, range[0], range[1], dir, sig)) }
+  const fixNote = (n: Note) => {
+    const at = locate(sc.prose, n.quote)
+    if (!at) return job.setErr('That passage is no longer in the text. Select it and use Rewrite.')
+    job.run('Suggesting a fix…', sig => direct(sc.id, at[0], at[1], `Fix this: ${n.text}${n.fix ? `\nSuggested fix: ${n.fix}` : ''}`, sig))
+  }
+  const delScene = () => { tx(`Delete scene “${sc.title || 'Untitled scene'}”`, () => remove(sc.id)); go(next ? 'scene/' + next.id : prev ? 'scene/' + prev.id : 'story/' + st.id) }
+
+  const noCard = !sc.card.trim()
+  const assist: (AssistItem | 'sep')[] = [
+    { label: 'Draft from card', dest: 'Suggestions', run: draft, disabled: noCard || sc.pinned,
+      hint: sc.pinned ? 'Locked: unlock it in ⋯ to redraft' : noCard ? 'Write the scene card first' : sc.prose.trim() ? 'A new draft from the card and the canon, shown over your text' : 'Writes the scene from its card and the canon' },
+    tool ? { label: 'Rewrite the selection', hint: `${plural(words(sel), 'word')}: say how it should change`, dest: 'Suggestions', run: () => setTool({ ...tool, mode: 'rewrite' }) }
+      : { label: 'Rewrite the whole scene', hint: 'Say how it should change', dest: 'Suggestions', disabled: !sc.prose.trim() || sc.pinned, run: () => setTool({ range: [0, sc.prose.length], mode: 'rewrite' }) },
+    { label: 'Fill card from text', hint: sc.prose.trim() ? 'What happens, wants, must land, cast and events, read from the text' : 'Needs text to read', dest: 'Card', disabled: !sc.prose.trim(), run: fillCard },
+    'sep',
+    { label: 'Get feedback', hint: 'Notes on the scene against its card, voice and canon', dest: 'Margin', disabled: !sc.prose.trim(), run: feedback },
+    { label: 'Check continuity', hint: `Reads all of “${st.title}” against the canon`, dest: 'Margin + Questions', run: check },
+  ]
+
+  const textarea = (big?: boolean) => (
+    <textarea ref={area} className="prose-area" value={live || sc.prose} readOnly={!!live} aria-label="Scene text" autoFocus={big} spellCheck
+      placeholder={noCard ? 'Write here. Or write the scene card above and use ✦ Assist › Draft from card.' : 'Write here, or use ✦ Assist › Draft from card.'}
+      onChange={e => edit(x => { x.prose = e.target.value })}
+      onSelect={readSelection} onMouseDown={() => { down.current = true }}
+      onKeyDown={e => { if (e.key === 'Escape' && tool) { e.preventDefault(); setTool(undefined) } }} />
+  )
+  if (focus) return <Focus sc={sc} editor={textarea(true)} onExit={() => setFocus(false)} />
+
+  const author = (p.author || 'You').trim()[0]?.toUpperCase() || 'Y'
+  const noteCard = (n: Note) => <NoteCard key={n.id} n={n} author={author} busy={!!job.busy} ready={ready} onHot={on => setHot(on ? 'n:' + n.id : undefined)}
+    onShow={() => { const at = locate(sc.prose, n.quote); if (at) setFlash(at); else showToast('That passage is no longer in the text.') }} onFix={() => fixNote(n)} />
+  const suggCard = (h: Hunk, j: number) => <SuggestionCard key={'h' + j} h={h} n={j + 1} of={hunks.length} active={j === k} prose={sc.prose} onFocus={() => goTo(j)}
+    onCompare={() => setCompare({ title: 'The new draft from the card', before: sc.prose, after: h.p.replace || '' })} />
+  const y = (key: string) => (key in pos ? pos[key] - (pos.__float || 0) : 0)
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%', minWidth: 0 }}>
+    <div className="ed" ref={root}>
       <Bar>
-        <div className="crumbs grow"><a href={'#story/' + st.id} className="clip">{st.title}</a><Icon name="chevron" size={12} /><b className="clip">{sc.title || 'Untitled scene'}</b>
-          <span className="scene-of">{i + 1} of {scs.length}</span></div>
-        {hunks.length > 0 && <div className="changes">
-          <span>{hunks.length} suggested change{hunks.length === 1 ? '' : 's'}</span>
-          <button className="btn sm ins" onClick={() => tx(`Accept ${hunks.length} changes`, () => [...hunks].reverse().forEach(h => { applyProposal(h.p); if (pending.get(h.p.id!)?.includes(h.p)) dropPending(h.p) }))}>Accept all</button>
-          <button className="btn sm ghost" onClick={() => setEditing(e => !e)}>{editing ? 'Review' : 'Edit text'}</button>
-        </div>}
-        {(built === 'built' || built === 'stale') && <span className={'chip ' + BUILT[built].cls} title={BUILT[built].hint}>{BUILT[built].label}</span>}
-        <div className="row nowrap" style={{ gap: 0 }}>
-          <button className="icon-btn" disabled={i <= 0} title="Previous scene" aria-label="Previous scene" onClick={() => go(`write/${st.id}/${scs[i - 1].id}`)}><Icon name="left" /></button>
-          <button className="icon-btn" disabled={i >= scs.length - 1} title="Next scene" aria-label="Next scene" onClick={() => go(`write/${st.id}/${scs[i + 1].id}`)}><Icon name="right" /></button>
-          <button className="icon-btn" title={`Focus mode (${MOD}⇧↵)`} aria-label="Focus mode" onClick={() => setFocus(true)}><Icon name="focus" /></button>
-        </div>
+        <div className="crumbs grow"><a href={'#story/' + st.id} className="clip">{st.title || 'Untitled story'}</a><Icon name="chevron" size={12} /><b className="clip">{sc.title || 'Untitled scene'}</b>
+          <span className="scene-of">Scene {i + 1} of {scs.length}</span></div>
+        <button className="icon-btn" disabled={!prev} title={prev ? `Previous scene: ${prev.title}` : 'This is the first scene'} aria-label="Previous scene" onClick={() => prev && go('scene/' + prev.id)}><Icon name="left" /></button>
+        <button className="icon-btn" disabled={!next} title={next ? `Next scene: ${next.title}` : 'This is the last scene'} aria-label="Next scene" onClick={() => next && go('scene/' + next.id)}><Icon name="right" /></button>
+        <button className="icon-btn" title={`Focus mode (${MOD}⇧↵)`} aria-label="Focus mode" onClick={() => setFocus(true)}><Icon name="focus" /></button>
+        <span className="bar-sep" />
+        <AssistMenu items={assist} busy={job.busy ? 'busy' : undefined} />
+        <MoreMenu sc={sc} next={next} caret={caret} onHistory={() => setHistory(true)} onDelete={delScene} />
+        <span className="bar-sep" />
       </Bar>
-      <article className="doc">
-        <Plan s={s} st={st} sc={sc} onDerive={() => run('derive')} busy={!!job.busy} />
-        <input className="doc-title" value={sc.title} aria-label="Scene title" onChange={e => edit(x => { x.title = e.target.value })} />
-        <JobStatus job={job} />
-        {review ? <Review sc={sc} hunks={hunks} /> : editor()}
-        <div className="doc-foot">
-          <span>{w.toLocaleString()}{sc.target ? ` / ${sc.target.toLocaleString()}` : ''} words</span>
-          {sc.target ? <div className="bar" style={{ width: 70 }}><i style={{ width: Math.min(100, (w / sc.target) * 100) + '%' }} /></div> : null}
-          {selWords > 0 && <span>{selWords} selected</span>}
-          <span>Today {sessionWords(s).toLocaleString()}{p.sessionTarget ? ` / ${p.sessionTarget.toLocaleString()}` : ''}</span>
-          <span className="grow" />
-          {sc.pinned && <span title="Batch builds skip this scene">Pinned</span>}
-          {sc.exclude && <span>Not in compile</span>}
-          <Snapshots sc={sc} />
+      {hunks.length > 0 && <SuggestionBar hunks={hunks} k={k} folded={folded} prose={sc.prose} onGo={goTo}
+        onCompare={h => setCompare({ title: 'The new draft from the card', before: sc.prose, after: h.p.replace || '' })} />}
+      <div className={'ed-body' + (folded ? ' folded' : '')} ref={body}>
+        {folded && <div className="ed-gut" aria-label="Notes, folded while the assistant is open">
+          {open.filter(n => ('n:' + n.id) in pos).map(n => (
+            <div key={n.id} className="ed-gm-pos" style={{ top: pos['n:' + n.id] }}>
+              <Popover trigger={o => <button className={'ed-gm ' + n.by} title={n.text} aria-label="Show note" onClick={o}
+                onMouseEnter={() => setHot('n:' + n.id)} onMouseLeave={() => setHot(undefined)}>{n.by === 'check' ? '!' : n.by === 'ai' ? <Spark size={10} /> : author}</button>}>
+                {() => <div style={{ width: 300 }}>{noteCard(n)}</div>}
+              </Popover>
+            </div>
+          ))}
+        </div>}
+        <div className="ed-page">
+          <div className="ed-doc">
+            <SceneCard s={s} st={st} sc={sc} built={built} compact={folded} busy={!!job.busy} ready={ready} onFill={fillCard} />
+            {fill && <CardChanges s={s} sc={sc} fill={fill} onDone={() => setFill(undefined)} />}
+            <input className="doc-title" value={sc.title} placeholder="Untitled scene" aria-label="Scene title" onChange={e => edit(x => { x.title = e.target.value })} />
+            <JobStatus job={job} />
+            <div className="ed-prose" ref={wrap}>
+              <div className="ed-back" ref={back} aria-hidden="true"><Backdrop text={live || sc.prose} ranges={ranges} /></div>
+              {textarea()}
+              {tool && <SelectionTool key={tool.range.join(':') + tool.mode} tool={tool} setTool={setTool} text={sel} whole={tool.range[0] === 0 && tool.range[1] === sc.prose.length}
+                pov={st.pov ? firstName(nameOf(s, st.pov)) : ''} ready={ready} busy={!!job.busy}
+                top={tool.range[0] === 0 && tool.range[1] === sc.prose.length ? 0 : (pos['z:sel'] ?? 0) - (pos.__wrap ?? 0) + 8} left={Math.max(0, Math.min((pos['x:sel'] ?? 0) - 24, (pos.__w ?? 600) - 452))}
+                onRewrite={dir => rewrite(tool.range, dir)}
+                onComment={text => { tx('Add comment', () => { create('note', newNote(sc.id, { quote: sel, text })) }, false); setTool(undefined) }}
+                onAsk={q => { askAssistant(`About this passage in “${sc.title}”:\n\n“${sel}”${q ? `\n\n${q}` : ''}`); setTool(undefined) }} />}
+            </div>
+          </div>
         </div>
-      </article>
-      <CommandBar sel={sel ? sc.prose.slice(sel[0], sel[1]) : ''} busy={!!job.busy} run={run} canBuild={!!sc.card.trim()} />
+        {!folded && <aside className="ed-margin" aria-label="Notes">
+          <MarginHead sc={sc} open={open.length} busy={!!job.busy} ready={ready} onFeedback={feedback} />
+          <div className="ed-float-wrap" ref={floatRef}>
+            <Floating items={[
+              ...hunks.map((h, j) => ({ k: 'h:' + j, y: h.whole ? 0 : y('h:' + j), node: suggCard(h, j) })),
+              ...open.map(n => ({ k: 'n:' + n.id, y: n.quote && ('n:' + n.id) in pos ? y('n:' + n.id) : 0, node: noteCard(n) })),
+            ]} />
+          </div>
+          <Resolved notes={notes.filter(n => n.done)} />
+        </aside>}
+      </div>
+      <footer className="ed-foot">
+        <span>{w.toLocaleString()}{sc.target ? ` / ${sc.target.toLocaleString()}` : ''} words</span>
+        {sc.target ? <span className="ed-mini" aria-hidden="true"><i style={{ width: Math.min(100, (w / sc.target) * 100) + '%' }} /></span> : null}
+        <span>Today {Math.max(0, sessionWords(s)).toLocaleString()}{p.sessionTarget ? ` / ${p.sessionTarget.toLocaleString()}` : ''}</span>
+        <span className="grow" />
+        <span className="ed-hint">Select text to rewrite or comment · <kbd>{MOD}J</kbd> ask the assistant</span>
+        <span className="bar-sep" />
+        <button className="btn sm ghost" onClick={() => setHistory(true)}><Icon name="history" size={14} />History{sc.snapshots.length ? ` · ${sc.snapshots.length}` : ''}</button>
+      </footer>
+      {history && <HistoryDialog sc={sc} onClose={() => setHistory(false)} />}
+      {compare && <CompareDialog {...compare} onClose={() => setCompare(undefined)} />}
     </div>
   )
 }
 
-/** The text with open edits shown as tracked changes, each with Accept / Reject. */
-function Review({ sc, hunks }: { sc: Scene; hunks: Hunk[] }) {
-  const out: React.ReactNode[] = []
-  let pos = 0
-  hunks.forEach((h, k) => {
-    out.push(<span key={'t' + k}>{sc.prose.slice(pos, h.at)}</span>)
-    out.push(<span key={'h' + k}><Diff parts={diffWords(h.p.find!, h.p.replace || '')} /></span>)
-    const end = sc.prose.indexOf('\n', h.at + h.p.find!.length)
-    const stop = end < 0 ? sc.prose.length : end
-    out.push(<span key={'r' + k}>{sc.prose.slice(h.at + h.p.find!.length, stop)}</span>)
-    out.push(<span key={'a' + k} className="hunk" role="group" aria-label="Change">
-      <span className="who">{h.who}</span>{h.p.why && <span>{h.p.why}</span>}
-      <button className="btn sm ins" onClick={() => accept(h)}>Accept</button>
-      <button className="btn sm" onClick={h.reject}>Reject</button>
-    </span>)
-    pos = sc.prose[stop] === '\n' ? stop + 1 : stop
+/** The text again, invisible, with marks where highlights go; anchors (data-a / data-z) mark where each range starts and ends. */
+function Backdrop({ text, ranges }: { text: string; ranges: Range[] }) {
+  const rs = ranges.filter(r => r.b > r.a && r.a >= 0 && r.b <= text.length)
+  const cuts = [...new Set([0, text.length, ...rs.flatMap(r => [r.a, r.b])])].sort((a, b) => a - b)
+  const out: ReactNode[] = []
+  cuts.forEach((c, j) => {
+    for (const r of rs) if (r.b === c) out.push(<span key={'z' + r.k} data-z={r.k} />)
+    for (const r of rs) if (r.a === c) out.push(<span key={'a' + r.k} data-a={r.k} />)
+    const end = cuts[j + 1]
+    if (end === undefined) return
+    const on = rs.filter(r => r.a <= c && r.b >= end)
+    const t = text.slice(c, end)
+    out.push(on.length ? <mark key={'m' + c} className={on.map(r => r.cls).join(' ')}>{t}</mark> : <span key={'t' + c}>{t}</span>)
   })
-  out.push(<span key="end">{sc.prose.slice(pos)}</span>)
-  return <div className="review">{out}</div>
+  return <>{out}{'​'}</>
 }
 
-const COMMANDS: { cmd: string; hint: string; sel?: boolean }[] = [
-  { cmd: 'rebuild', hint: 'Render the scene from its plan; the current text becomes a snapshot' },
-  { cmd: 'critique', hint: 'The assistant reads the scene as an editor and leaves notes' },
-  { cmd: 'check', hint: 'Continuity check of the whole story against the canon' },
-  { cmd: 'derive', hint: 'Fill the plan from the text' },
-  { cmd: 'snapshot', hint: 'Save a named version of the text: /snapshot before the cut' },
-  { cmd: 'split', hint: 'Split the scene at the cursor or selection' },
-  { cmd: 'merge', hint: 'Merge the next scene into this one' },
-  { cmd: 'comment', hint: 'Comment on the selected passage: /comment too soft', sel: true },
-  { cmd: 'suggest', hint: 'Suggest scenes the story is missing' },
-  { cmd: 'focus', hint: 'Full-screen writing; Esc to leave' },
-]
+/** Cards placed at their anchors' heights, pushed down so they never overlap. */
+function Floating({ items }: { items: { k: string; y: number; node: ReactNode }[] }) {
+  const refs = useRef(new Map<string, HTMLDivElement>())
+  const [tops, setTops] = useState<Record<string, number>>({})
+  useLayoutEffect(() => {
+    let bottom = 0
+    const next: Record<string, number> = {}
+    for (const it of [...items].sort((a, b) => a.y - b.y)) { const t = Math.max(it.y, bottom); next[it.k] = t; bottom = t + (refs.current.get(it.k)?.offsetHeight || 0) + 10 }
+    if (JSON.stringify(next) !== JSON.stringify(tops)) setTops(next)
+  })
+  const height = Math.max(0, ...items.map(it => (tops[it.k] ?? it.y) + (refs.current.get(it.k)?.offsetHeight || 0)))
+  return (
+    <div className="ed-float" style={{ height }}>
+      {items.map(it => <div key={it.k} className="ed-float-item" style={{ top: tops[it.k] ?? it.y }} ref={el => { if (el) refs.current.set(it.k, el); else refs.current.delete(it.k) }}>{it.node}</div>)}
+    </div>
+  )
+}
 
-function CommandBar({ sel, busy, run, canBuild }: { sel: string; busy: boolean; run: (cmd: string, arg?: string) => void; canBuild: boolean }) {
+// ---------------- the selection toolbar ----------------
+
+const QUICK = ['Tighter', 'Colder', 'More subtext', 'Cut the metaphor']
+
+function SelectionTool({ tool, setTool, text, whole, pov, ready, busy, top, left, onRewrite, onComment, onAsk }: {
+  tool: Tool; setTool: (t: Tool | undefined) => void; text: string; whole: boolean; pov: string; ready: boolean; busy: boolean; top: number; left: number
+  onRewrite: (dir: string) => void; onComment: (text: string) => void; onAsk: (q: string) => void
+}) {
   const [v, setV] = useState('')
-  const [i, setI] = useState(0)
-  const slash = v.startsWith('/')
-  const name = v.slice(1).split(' ')[0].toLowerCase()
-  const menu = slash ? COMMANDS.filter(c => c.cmd.startsWith(name) && (!c.sel || sel)) : []
-  const submit = () => {
-    if (!v.trim() || busy) return
-    if (slash) {
-      const c = menu[i] || COMMANDS.find(x => x.cmd === name)
-      if (!c) return
-      if (c.cmd === 'rebuild' && !canBuild) return showToast('Rebuild needs a plan: say what happens in the plan above, or /derive it from the text.')
-      run(c.cmd, v.slice(1 + c.cmd.length).trim())
-    } else if (sel) run('direct', v.trim())
-    else dispatchEvent(new CustomEvent('canon:ask', { detail: v.trim() }))
-    setV(''); setI(0)
+  const mode = tool.mode
+  const set = (m: Mode) => setTool({ ...tool, mode: m === mode ? 'menu' : m })
+  const submit = () => { const t = v.trim(); if (mode === 'rewrite' && t) onRewrite(t); else if (mode === 'comment' && t) onComment(t); else if (mode === 'ask') onAsk(t) }
+  const quick = [...QUICK, ...(pov ? [`In ${pov}’s voice`] : [])]
+  return (
+    <div className="ed-tb" role="dialog" aria-label={whole ? 'Rewrite the whole scene' : 'Selection actions'} style={{ top, left }} onMouseDown={e => e.stopPropagation()}
+      onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); setTool(undefined) } }}>
+      <div className="ed-tb-top">
+        <button className={mode === 'rewrite' ? 'on' : ''} onClick={() => set('rewrite')}><Spark size={13} />Rewrite</button>
+        {!whole && <button className={mode === 'comment' ? 'on' : ''} onClick={() => set('comment')}><Icon name="comment" size={14} />Comment</button>}
+        {!whole && <button className={mode === 'ask' ? 'on' : ''} onClick={() => set('ask')}>Ask about this</button>}
+        <span className="grow" />
+        <span className="ed-tb-n">{whole ? 'Whole scene · ' : ''}{plural(words(text), 'word')}</span>
+        <button className="x" aria-label="Close" onClick={() => setTool(undefined)}>×</button>
+      </div>
+      {mode !== 'menu' && <div className="ed-tb-in">
+        {mode !== 'comment' && !ready ? <ConnectPrompt compact what={mode === 'rewrite' ? 'rewrite passages' : 'ask about the text'} /> : <>
+          <label className="ed-tb-field">
+            {mode === 'comment'
+              ? <textarea autoFocus value={v} rows={2} placeholder="Your note on this passage" onChange={e => setV(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() } }} />
+              : <input autoFocus value={v} placeholder={mode === 'rewrite' ? (whole ? 'How should the scene change? Slower; less said; end on the bell' : 'How should it change? Slower; let her notice the smell first') : 'What do you want to know? (optional)'}
+                onChange={e => setV(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submit() } }} />}
+            <button className="btn sm" disabled={busy || (mode !== 'ask' && !v.trim())} onClick={submit}>{mode === 'rewrite' ? 'Rewrite' : mode === 'comment' ? 'Comment' : 'Ask'} <kbd>↵</kbd></button>
+          </label>
+          {mode === 'rewrite' && <div className="ed-tb-quick">{quick.map(q => <button key={q} disabled={busy} onClick={() => onRewrite(q)}>{q}</button>)}</div>}
+          <div className="ed-tb-cap">{mode === 'rewrite' ? 'Comes back as a suggestion in the text. Nothing changes until you accept it.' : mode === 'comment' ? 'Lands in the margin, next to the passage.' : 'Opens the assistant with this passage quoted.'}</div>
+        </>}
+      </div>}
+    </div>
+  )
+}
+
+// ---------------- suggestions ----------------
+
+function SuggestionBar({ hunks, k, folded, prose, onGo, onCompare }: { hunks: Hunk[]; k: number; folded: boolean; prose: string; onGo: (j: number) => void; onCompare: (h: Hunk) => void }) {
+  const h = hunks[k]
+  const from = [...new Set(hunks.map(x => x.who === 'Assistant' ? 'the assistant' : x.who === 'Rewrite' ? 'your rewrites' : 'the card'))].join(' and ')
+  return (
+    <div className="ed-sbar-wrap">
+      <div className="ed-sbar" role="region" aria-label="Suggestions">
+        <Spark size={14} />
+        <b>{plural(hunks.length, 'suggestion')}</b><span className="muted clip">from {from} · you can keep writing</span>
+        <span className="grow" />
+        <button className="icon-btn sm" aria-label="Previous suggestion" disabled={k <= 0} onClick={() => onGo(k - 1)}><Icon name="left" size={14} /></button>
+        <span className="small">{k + 1} of {hunks.length}</span>
+        <button className="icon-btn sm" aria-label="Next suggestion" disabled={k >= hunks.length - 1} onClick={() => onGo(k + 1)}><Icon name="right" size={14} /></button>
+        <button className="btn sm" onClick={() => rejectAll(hunks)}>Reject all</button>
+        <button className="btn sm ins" onClick={() => acceptAll(hunks)}>Accept all</button>
+      </div>
+      {folded && h && <div className="ed-sbar-detail"><SuggestionCard key={k} h={h} n={k + 1} of={hunks.length} active prose={prose} flat onFocus={() => onGo(k)} onCompare={() => onCompare(h)} /></div>}
+    </div>
+  )
+}
+
+function SuggestionCard({ h, n, of, active, prose, flat, onFocus, onCompare }: { h: Hunk; n: number; of: number; active: boolean; prose: string; flat?: boolean; onFocus: () => void; onCompare: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [v, setV] = useState(h.p.replace || '')
+  const save = () => { if (v !== h.p.replace) h.edit?.(v); setEditing(false) }
+  return (
+    <div className={'ed-card-s' + (active ? ' on' : '') + (flat ? ' flat' : '')} role="group" aria-label={`Suggestion ${n} of ${of}`} onClick={onFocus}>
+      <div className="ed-who"><span className="ed-av ai"><Spark size={10} /></span><b>{h.who}</b>{h.source && <span className="lbl clip">{h.source}</span>}</div>
+      {h.p.why && <div className="ed-why">{h.p.why}</div>}
+      {h.whole
+        ? <div className="ed-why">A new draft of the whole scene: {plural(words(h.p.replace || ''), 'word')}, now {plural(words(prose), 'word')}. If you accept, your text is kept in History. <button className="link" onClick={e => { e.stopPropagation(); onCompare() }}>Compare</button></div>
+        : editing ? <textarea className="f" autoFocus value={v} onClick={e => e.stopPropagation()} onChange={e => setV(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) save() }} />
+          : <div className="ed-diff"><Diff parts={diffWords(h.p.find || '', h.p.replace || '')} /></div>}
+      <div className="ed-act" onClick={e => e.stopPropagation()}>
+        <button className="btn sm ins" onClick={() => {
+          if (editing && v !== h.p.replace) h.edit?.(v)
+          // A local suggestion was edited in place; a chat's is copied with the new text.
+          accept(!editing || h.p.replace === v ? h : { ...h, p: { ...h.p, replace: v } })
+        }}>Accept</button>
+        <button className="btn sm" onClick={h.reject}>Reject</button>
+        <span className="grow" />
+        {h.edit && !h.whole && <button className="btn sm ghost" onClick={() => (editing ? save() : setEditing(true))}>{editing ? 'Done editing' : 'Edit before accepting'}</button>}
+      </div>
+    </div>
+  )
+}
+
+// ---------------- notes in the margin ----------------
+
+function MarginHead({ sc, open, busy, ready, onFeedback }: { sc: Scene; open: number; busy: boolean; ready: boolean; onFeedback: () => void }) {
+  const [connect, setConnect] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const [v, setV] = useState('')
+  const add = () => { if (v.trim()) tx('Add note', () => { create('note', newNote(sc.id, { text: v.trim() })) }, false); setV(''); setAdding(false) }
+  return (
+    <div className="ed-mh">
+      <div className="row nowrap"><b>Notes</b><span className="lbl">{open ? `${open} open` : 'none open'}</span><span className="grow" />
+        <button className="btn sm soft" disabled={busy || !sc.prose.trim()} title={sc.prose.trim() ? 'Notes on the scene against its card, voice and canon' : 'Needs text to read'}
+          onClick={() => (ready ? onFeedback() : setConnect(c => !c))}><Spark size={12} />Get feedback</button></div>
+      {connect && !ready && <ConnectPrompt compact what="get feedback" />}
+      {adding ? <div className="ed-add">
+        <textarea className="f" autoFocus value={v} placeholder="A note on the whole scene" onChange={e => setV(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); add() } else if (e.key === 'Escape') setAdding(false) }} />
+        <div className="row"><button className="btn sm" disabled={!v.trim()} onClick={add}>Add note</button><button className="btn sm ghost" onClick={() => setAdding(false)}>Cancel</button></div>
+      </div> : <button className="btn sm ghost ed-addbtn" onClick={() => setAdding(true)}><Icon name="plus" size={13} />Note on the scene</button>}
+    </div>
+  )
+}
+
+const SEV: Record<string, string> = { critical: 'Critical', error: 'Error', warning: 'Warning', note: 'Note' }
+
+function NoteCard({ n, author, busy, ready, onHot, onShow, onFix }: { n: Note; author: string; busy: boolean; ready: boolean; onHot: (on: boolean) => void; onShow: () => void; onFix: () => void }) {
+  const [reply, setReply] = useState<string>()
+  const [connect, setConnect] = useState(false)
+  const who = n.by === 'you' ? 'You' : n.by === 'ai' ? 'Assistant' : 'Continuity check'
+  const sub = n.by === 'you' ? `${n.quote ? 'on a passage' : 'on the scene'} · ${ago(n.at)}` : n.by === 'ai' ? n.topic || 'Feedback' : SEV[n.severity || 'warning'] || 'Warning'
+  const send = () => {
+    if (!reply?.trim()) return setReply(undefined)
+    tx('Reply to note', () => { create('note', newNote(n.scene, { quote: n.quote, text: reply.trim(), topic: 'Reply' })) }, false)
+    setReply(undefined)
   }
   return (
-    <div className="cmdbar">
-      <div className="cmdbar-in">
-        {menu.length > 0 && <div className="cmd-menu">{menu.map((c, k) => (
-          <button key={c.cmd} className={'menu-item' + (k === i ? ' on' : '')} onMouseEnter={() => setI(k)} onClick={() => { setV('/' + c.cmd + ' '); setI(k) }}>
-            <span className="mono ai-text" style={{ width: 80 }}>/{c.cmd}</span><span className="muted small">{c.hint}</span></button>))}</div>}
-        {sel && !slash && <div className="row small muted"><span className="chip on">Selection</span><span className="clip grow">“{sel.slice(0, 120)}{sel.length > 120 ? '…' : ''}”</span><span>Type how it should change, or /comment</span></div>}
-        <label className="cmd">
-          <span className="slash">{sel && !slash ? '✦' : '/'}</span>
-          <input value={v} aria-label="Command" placeholder={sel ? 'Direct the selection: colder; cut the metaphor; she doesn’t say it' : 'Type / for commands, or tell the assistant what this scene needs'}
-            onChange={e => { setV(e.target.value); setI(0) }}
-            onKeyDown={e => {
-              if (e.key === 'Enter') { e.preventDefault(); submit() }
-              else if (e.key === 'ArrowDown' && menu.length) { e.preventDefault(); setI(x => Math.min(x + 1, menu.length - 1)) }
-              else if (e.key === 'ArrowUp' && menu.length) { e.preventDefault(); setI(x => Math.max(x - 1, 0)) }
-              else if (e.key === 'Tab' && menu[i]) { e.preventDefault(); setV('/' + menu[i].cmd + ' ') }
-              else if (e.key === 'Escape') setV('')
-            }} />
-          {busy && <span className="spinner" />}
-        </label>
+    <div className={'ed-note ' + n.by + (n.done ? ' done' : '')} onMouseEnter={() => onHot(true)} onMouseLeave={() => onHot(false)}>
+      <div className="ed-who">
+        <span className={'ed-av ' + n.by}>{n.by === 'ai' ? <Spark size={10} /> : n.by === 'check' ? '!' : author}</span><b>{who}</b><span className="lbl clip">· {sub}</span>
+        <span className="grow" /><button className="x hover-only" aria-label="Delete note" title="Delete note" onClick={() => tx('Delete note', () => remove(n.id))}>×</button>
+      </div>
+      {n.quote && <button className="ed-q" title="Show the passage" onClick={onShow}>{n.quote}</button>}
+      <div className="ed-text">{n.text}</div>
+      {n.fix && <div className="ed-why"><span className="lbl">Suggested fix</span> {n.fix}</div>}
+      {connect && !ready && <ConnectPrompt compact what="suggest fixes" />}
+      {reply !== undefined && <textarea className="f" autoFocus value={reply} placeholder="Your reply" onChange={e => setReply(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } else if (e.key === 'Escape') setReply(undefined) }} />}
+      <div className="ed-act">
+        {n.done ? <button className="btn sm ghost" onClick={() => update<'note'>(n.id, x => { x.done = false })}>Reopen</button> : <>
+          {n.by !== 'you' && n.quote && <button className="btn sm soft" disabled={busy} title="A rewrite of the passage that addresses the note, as a suggestion" onClick={() => (ready ? onFix() : setConnect(c => !c))}>Suggest a fix</button>}
+          {reply === undefined ? <button className="btn sm ghost" onClick={() => setReply('')}>Reply</button> : <button className="btn sm" onClick={send}>Send reply</button>}
+          <button className="btn sm ghost" onClick={() => update<'note'>(n.id, x => { x.done = true })}>Resolve</button>
+        </>}
       </div>
     </div>
   )
 }
 
-function Focus({ sc, editor, onExit }: { sc: Scene; editor: React.ReactNode; onExit: () => void }) {
-  const [paper, setPaper] = useState(() => stored('canon.paper', '700'))
+function Resolved({ notes }: { notes: Note[] }) {
+  const [open, setOpen] = useState(false)
+  if (!notes.length) return null
+  return (
+    <div className="ed-resolved">
+      <button className="btn sm ghost" onClick={() => setOpen(o => !o)}><Icon name={open ? 'down' : 'chevron'} size={12} />{plural(notes.length, 'resolved note')}</button>
+      {open && notes.map(n => (
+        <div key={n.id} className="ed-note done">
+          {n.quote && <span className="ed-q">{n.quote}</span>}
+          <div className="ed-text">{n.text}</div>
+          <div className="ed-act"><button className="btn sm ghost" onClick={() => update<'note'>(n.id, x => { x.done = false })}>Reopen</button>
+            <button className="btn sm ghost danger" onClick={() => tx('Delete note', () => remove(n.id))}>Delete</button></div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ---------------- the scene card and its properties ----------------
+
+function SceneCard({ s, st, sc, built, compact, busy, ready, onFill }: { s: State; st: Story; sc: Scene; built: ReturnType<typeof builtState>; compact: boolean; busy: boolean; ready: boolean; onFill: () => void }) {
+  const edit = (fn: (x: Scene) => void) => update<'scene'>(sc.id, fn)
+  const empty = !sc.card.trim()
+  const [editing, setEditing] = useState(empty && !sc.prose.trim())
+  const [expanded, setExpanded] = useState(false)
+  const status = sc.status || 'todo'
+  const docs = st.form === 'documents'
+  const landed = new Set((sc.meta?.landed || '').split('\n').filter(Boolean))
+  const must = sc.mustLand.filter(m => m.trim())
+  const flag = (built === 'built' || built === 'stale') && <span className={'chip ' + BUILT[built].cls} title={BUILT[built].hint}>{BUILT[built].label}</span>
+  if (compact && !expanded && !editing) return (
+    <button className="ed-cardrow" onClick={() => setExpanded(true)} title="Show the scene card">
+      <span className="lbl">Scene card</span><p>{sc.card || 'No card yet'}</p>
+      <span className={'status-pill ' + status}>{STATUSES.find(x => x.id === status)!.label}</span><Icon name="down" size={12} />
+    </button>
+  )
+  return (
+    <section className="ed-card" aria-label="Scene card">
+      <div className="row nowrap"><span className="lbl">Scene card</span>{flag}<span className="grow" />
+        {compact && !editing && <button className="btn sm ghost" onClick={() => setExpanded(false)}>Fold</button>}
+        <button className="btn sm ghost" onClick={() => setEditing(e => !e)}>{editing ? 'Done' : 'Edit card'}</button></div>
+      {editing ? <div className="stack">
+        <Area label={docs ? 'What the document is and does' : 'What happens'} value={sc.card} autoFocus={empty} placeholder="What happens, and what changes" onChange={v => edit(x => { x.card = v })} />
+        {!docs && <Area label="What each person wants" value={sc.wants} placeholder="Who wants what here, and what stands in the way" onChange={v => edit(x => { x.wants = v })} />}
+        <Area label="Must land · one per line" value={sc.mustLand.join('\n')} placeholder="A line, an image or a turn the scene has to deliver" onChange={v => edit(x => { x.mustLand = v.split('\n') })} />
+      </div> : <>
+        {empty ? <div className="ed-nocard"><span className="muted">{sc.prose.trim() ? 'No card yet. The card is what drafting, checks and the outline work from.' : 'No card yet: say what happens in this scene.'}</span>
+          {sc.prose.trim() ? <button className="btn sm soft" disabled={busy || !ready} title={ready ? 'Reads the text and proposes a card' : 'Connect an assistant in Settings'} onClick={onFill}><Spark size={12} />Fill card from text</button>
+            : <button className="btn sm" onClick={() => setEditing(true)}>Write the card</button>}</div>
+          : <p className="ed-what">{sc.card}</p>}
+        {sc.wants.trim() && <p className="ed-wants"><span className="lbl">Wants</span>{sc.wants}</p>}
+        {must.length > 0 && <div className="ed-must">{must.map((m, j) => (
+          <label key={j} className={'ed-must-i' + (landed.has(m) ? ' on' : '')} title={landed.has(m) ? 'Landed' : 'Tick it once the text delivers it'}>
+            <span className="lbl ed-must-l">{j === 0 ? 'Must land' : ''}</span>
+            <input type="checkbox" checked={landed.has(m)} onChange={() => edit(x => { const l = new Set((x.meta?.landed || '').split('\n').filter(Boolean)); if (l.has(m)) l.delete(m); else l.add(m); x.meta = { ...x.meta, landed: [...l].join('\n') } })} />
+            <span>{m}</span></label>))}</div>}
+      </>}
+      <Props s={s} st={st} sc={sc} />
+    </section>
+  )
+}
+
+type PropKey = 'status' | 'beat' | 'label' | 'cast' | 'shows' | 'target' | 'tags' | `field:${string}`
+
+function Props({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
+  const p = project(s), labels = p.labels || {}
+  const fields = p.sceneFields || []
+  const status = sc.status || 'todo'
+  const chip = (key: PropKey, label: ReactNode) =>
+    <Popover key={key} trigger={o => <button className="chip ed-chip" onClick={o}>{label}</button>}>{close => <PropEditor s={s} st={st} sc={sc} k={key} close={close} />}</Popover>
+  const linkName = (id: string) => eventCode(s, id) || (nameOf(s, id).length > 22 ? nameOf(s, id).slice(0, 20) + '…' : nameOf(s, id)) || 'Missing'
+  const on = Object.entries(sc.links).filter(([, v]) => v === 'on').map(([id]) => id), felt = Object.entries(sc.links).filter(([, v]) => v === 'felt').map(([id]) => id)
+  const shown = new Set<string>(['status'])
+  const out: ReactNode[] = [chip('status', <><span className={'status-pill ' + status}>{STATUSES.find(x => x.id === status)!.label}</span><Icon name="down" size={10} /></>)]
+  const add = (key: PropKey, has: boolean, label: () => ReactNode) => { if (has) { shown.add(key); out.push(chip(key, label())) } }
+  add('beat', !!sc.beat, () => <><span className="k">Beat</span>{sc.beat}</>)
+  add('label', !!sc.label, () => <><i className="dot" style={{ background: labelColor(sc.label) }} />{labels[sc.label!] || sc.label}</>)
+  add('cast', sc.cast.length > 0, () => <><span className="k">Cast</span><span className="clip">{sc.cast.map(c => nameOf(s, c).replace(/^The /, '') || 'Missing').join(' · ')}</span></>)
+  add('shows', on.length + felt.length > 0, () => <><span className="k">Shows</span>{on.map(linkName).join(' ')}{felt.length > 0 && <><span className="k">· felt</span>{felt.map(linkName).join(' ')}</>}</>)
+  add('target', !!sc.target, () => <><span className="k">Target</span>{sc.target!.toLocaleString()}</>)
+  add('tags', (sc.tags || []).filter(Boolean).length > 0, () => <><span className="k">Tags</span>{(sc.tags || []).filter(Boolean).join(', ')}</>)
+  for (const f of fields) add(`field:${f.key}`, !!sc.meta?.[f.key], () => <><span className="k">{f.label}</span>{f.kind === 'check' ? 'Yes' : sc.meta![f.key]}</>)
+  const missing: [PropKey, string][] = ([['beat', 'Beat'], ['label', 'Label'], ['cast', 'Cast and setting'], ['shows', 'Events and facts it shows'], ['target', 'Target words'], ['tags', 'Tags']] as [PropKey, string][])
+    .concat(fields.map(f => [`field:${f.key}`, f.label || 'Untitled field'] as [PropKey, string])).filter(([key]) => !shown.has(key))
+  return (
+    <div className="ed-props">
+      {out}
+      {sc.pinned && <Popover trigger={o => <button className="chip ed-chip" onClick={o}><Icon name="lock" size={12} />Locked</button>}>{close => <div className="ed-pedit">
+        <p className="small">Locked: the assistant won’t redraft this scene.</p><button className="btn sm" onClick={() => { tx('Unlock scene', () => update<'scene'>(sc.id, x => { x.pinned = false })); close() }}>Unlock</button></div>}</Popover>}
+      {sc.exclude && <Popover trigger={o => <button className="chip ed-chip" onClick={o}><Icon name="eye" size={12} />Left out of export</button>}>{close => <div className="ed-pedit">
+        <p className="small">This scene is skipped when you export.</p><button className="btn sm" onClick={() => { update<'scene'>(sc.id, x => { x.exclude = false }); close() }}>Include it again</button></div>}</Popover>}
+      <Popover trigger={o => <button className="chip dash ed-chip" onClick={o}>+ Property</button>}>{close => <AddProp s={s} st={st} sc={sc} missing={missing} close={close} />}</Popover>
+    </div>
+  )
+}
+
+function AddProp({ s, st, sc, missing, close }: { s: State; st: Story; sc: Scene; missing: [PropKey, string][]; close: () => void }) {
+  const [k, setK] = useState<PropKey>()
+  if (k) return <PropEditor s={s} st={st} sc={sc} k={k} close={close} />
+  return <div className="ed-pedit" style={{ padding: 0 }}>
+    {missing.map(([key, label]) => <button key={key} className="menu-item" onClick={() => setK(key)}>{label}</button>)}
+    {missing.length > 0 && <div className="menu-sep" />}
+    <button className="menu-item" onClick={() => { close(); openSettings('labels') }}><span className="grow">Custom scene fields…</span><span className="lbl">Settings</span></button>
+  </div>
+}
+
+function PropEditor({ s, st, sc, k, close }: { s: State; st: Story; sc: Scene; k: PropKey; close: () => void }) {
+  const edit = (fn: (x: Scene) => void) => update<'scene'>(sc.id, fn)
+  const p = project(s), labels = p.labels || {}
+  const [q, setQ] = useState('')
+  if (k === 'status') return <div className="ed-pedit" style={{ padding: 0 }}>{STATUSES.map(x => (
+    <button key={x.id} className={'menu-item' + ((sc.status || 'todo') === x.id ? ' on' : '')} onClick={() => { edit(y => { y.status = x.id as SceneStatus }); close() }}>
+      <span className={'status-pill ' + x.id}>{x.label}</span><span className="grow" />{(sc.status || 'todo') === x.id && <Icon name="check" size={14} />}</button>))}</div>
+  if (k === 'beat') {
+    const beats = [...new Set([...st.beats, sc.beat].filter(Boolean))]
+    return <div className="ed-pedit">
+      <span className="lbl">Beat</span>
+      {beats.map(b => <button key={b} className={'menu-item' + (sc.beat === b ? ' on' : '')} onClick={() => { edit(x => { x.beat = b }); close() }}>{b}</button>)}
+      {!st.beats.length && <p className="small muted">“{st.title}” has no beats yet. Add them in Story details on the outline, or type one.</p>}
+      <input className="f" value={q} placeholder="Another beat" onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && q.trim()) { edit(x => { x.beat = q.trim() }); close() } }} />
+      {sc.beat && <button className="btn sm ghost" onClick={() => { edit(x => { x.beat = '' }); close() }}>No beat</button>}
+    </div>
+  }
+  if (k === 'label') return <div className="ed-pedit" style={{ padding: 0 }}>
+    {LABELS.map(l => <button key={l} className={'menu-item' + (sc.label === l ? ' on' : '')} onClick={() => { edit(x => { x.label = l }); close() }}><i className="dot" style={{ background: labelColor(l) }} />{labels[l] || l}</button>)}
+    {sc.label && <><div className="menu-sep" /><button className="menu-item" onClick={() => { edit(x => { x.label = undefined }); close() }}>No label</button></>}
+    <div className="menu-sep" /><button className="menu-item" onClick={() => { close(); openSettings('labels') }}><span className="grow">Name the labels…</span><span className="lbl">Settings</span></button>
+  </div>
+  if (k === 'cast') return <div className="ed-pedit">
+    <span className="lbl">Cast and setting</span>
+    {sc.cast.map(c => <div key={c} className="row nowrap"><a className="grow clip" href={'#world/' + c}>{nameOf(s, c) || 'Missing'}</a><button className="x" aria-label="Remove" onClick={() => edit(x => { x.cast = x.cast.filter(y => y !== c) })}>×</button></div>)}
+    <input className="f" autoFocus value={q} placeholder="Add someone or somewhere" onChange={e => setQ(e.target.value)} />
+    <div className="ed-pick">{typeIds(s).map(t => {
+      const xs = entities(s, t).filter(e => !sc.cast.includes(e.id) && e.name.toLowerCase().includes(q.toLowerCase()))
+      return xs.length ? <div key={t}><span className="lbl ed-pick-h">{typeDef(s, t).label}</span>{xs.map(e => <button key={e.id} className="menu-item" onClick={() => { edit(x => { x.cast.push(e.id) }); setQ('') }}>{e.name}</button>)}</div> : null
+    })}</div>
+  </div>
+  if (k === 'shows') return <div className="ed-pedit" style={{ width: 340 }}>
+    <span className="lbl">Events and facts this scene shows</span>
+    {Object.entries(sc.links).map(([id, how]) => <div key={id} className="row nowrap">
+      <a className="grow clip" href={'#' + hrefOf(s, id)}>{nameOf(s, id) || 'Missing'}</a>
+      <div className="seg"><button className={how === 'on' ? 'on' : ''} title="Shown on the page" onClick={() => edit(x => { x.links[id] = 'on' })}>On the page</button><button className={how === 'felt' ? 'on' : ''} title="The effect, not the cause" onClick={() => edit(x => { x.links[id] = 'felt' })}>Felt</button></div>
+      <button className="x" aria-label="Remove" onClick={() => edit(x => { delete x.links[id] })}>×</button></div>)}
+    <RecordPicker s={s} kinds={['fact']} label="+ Event or fact" exclude={Object.keys(sc.links)} onPick={id => edit(x => { x.links[id] = 'on' })} />
+  </div>
+  if (k === 'target') return <div className="ed-pedit">
+    <span className="lbl">Target words</span>
+    <input className="f" type="number" min={0} step={100} autoFocus value={sc.target || ''} onChange={e => edit(x => { x.target = Number(e.target.value) || undefined })} onKeyDown={e => { if (e.key === 'Enter') close() }} />
+  </div>
+  if (k === 'tags') return <div className="ed-pedit">
+    <span className="lbl">Tags, comma-separated</span>
+    <input className="f" autoFocus value={(sc.tags || []).join(', ')} placeholder="flashback, harbour" onChange={e => edit(x => { x.tags = e.target.value.split(',').map(t => t.trimStart()) })} onKeyDown={e => { if (e.key === 'Enter') close() }} />
+  </div>
+  const f = (p.sceneFields || []).find(x => `field:${x.key}` === k) as MetaField | undefined
+  if (!f) return null
+  const v = sc.meta?.[f.key] || '', set = (val: string) => edit(x => { x.meta = { ...x.meta, [f.key]: val } })
+  return <div className="ed-pedit">
+    <span className="lbl">{f.label}</span>
+    {f.kind === 'check' ? <label className="row nowrap"><input type="checkbox" checked={v === 'yes'} onChange={e => set(e.target.checked ? 'yes' : '')} />{f.label}</label>
+      : f.kind === 'list' ? (f.options || []).filter(Boolean).map(o => <button key={o} className={'menu-item' + (v === o ? ' on' : '')} onClick={() => { set(v === o ? '' : o); close() }}>{o}</button>)
+        : <input className="f" autoFocus type={f.kind === 'date' ? 'date' : 'text'} value={v} onChange={e => set(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') close() }} />}
+  </div>
+}
+
+/** "Fill card from text" comes back as proposed changes to the card. */
+function CardChanges({ s, sc, fill, onDone }: { s: State; sc: Scene; fill: CardFill; onDone: () => void }) {
+  const [off, setOff] = useState(new Set<keyof CardFill>())
+  const rows: { k: keyof CardFill; where: string; before?: string; after: string }[] = []
+  if (fill.title) rows.push({ k: 'title', where: 'Title', before: sc.title, after: fill.title })
+  if (fill.card) rows.push({ k: 'card', where: 'Scene card › What happens', before: sc.card, after: fill.card })
+  if (fill.wants) rows.push({ k: 'wants', where: 'Scene card › Wants', before: sc.wants, after: fill.wants })
+  if (fill.mustLand) rows.push({ k: 'mustLand', where: 'Scene card › Must land', before: sc.mustLand.join('\n'), after: fill.mustLand.join('\n') })
+  if (fill.beat) rows.push({ k: 'beat', where: 'Beat', before: sc.beat, after: fill.beat })
+  if (fill.cast) rows.push({ k: 'cast', where: 'Cast and setting', after: fill.cast.map(id => nameOf(s, id)).join(' · ') })
+  if (fill.links) rows.push({ k: 'links', where: 'Shows', after: Object.entries(fill.links).map(([id, v]) => `${nameOf(s, id)}${v === 'felt' ? ' (felt)' : ''}`).join(' · ') })
+  const picked = rows.filter(r => !off.has(r.k))
+  const apply = () => { tx('Fill card from text', () => applyCardFill(sc.id, Object.fromEntries(picked.map(r => [r.k, fill[r.k]])) as CardFill)); onDone() }
+  return (
+    <div className="changes-box" role="group" aria-label="Proposed changes to the card">
+      <div className="changes-h"><span className="spark-ic"><Spark size={12} /></span><b>Proposed changes to the card</b><span className="lbl">{picked.length} of {rows.length} selected</span></div>
+      {rows.map(r => (
+        <label key={r.k} className="change-row">
+          <input type="checkbox" checked={!off.has(r.k)} onChange={() => setOff(o => { const n = new Set(o); if (n.has(r.k)) n.delete(r.k); else n.add(r.k); return n })} aria-label="Include this change" />
+          <span className="change-body"><span className="change-one"><span className="lbl">{r.where}</span>
+            <span className="change-text">{r.before?.trim() ? <Diff parts={diffWords(r.before, r.after)} /> : <ins>{r.k === 'cast' || r.k === 'links' ? '+ ' : ''}{r.after}</ins>}</span></span></span>
+        </label>
+      ))}
+      <div className="changes-foot"><button className="btn sm pri" disabled={!picked.length} onClick={apply}>{picked.length === 1 ? 'Apply 1 change' : `Apply ${picked.length} changes`}</button><button className="btn sm ghost" onClick={onDone}>Discard</button></div>
+    </div>
+  )
+}
+
+// ---------------- ⋯: lock, export, split, merge, history, delete ----------------
+
+function MoreMenu({ sc, next, caret, onHistory, onDelete }: { sc: Scene; next?: Scene; caret: React.RefObject<number>; onHistory: () => void; onDelete: () => void }) {
+  const item = (close: () => void, label: string, hint: string, run: () => void, opts: { icon: string; disabled?: boolean; danger?: boolean; on?: boolean }) =>
+    <button className={'assist-item ed-more-i' + (opts.danger ? ' danger' : '')} role="menuitem" disabled={opts.disabled} onClick={() => { close(); run() }}>
+      <Icon name={opts.icon} size={15} /><span className="t"><b>{label}</b><span>{hint}</span></span>{opts.on && <Icon name="check" size={14} />}</button>
+  return (
+    <Popover className="right" trigger={o => <button className="icon-btn" aria-label="More scene actions" title="More scene actions" onClick={o}><Icon name="more" /></button>}>
+      {close => {
+        const at = caret.current ?? 0
+        const canSplit = !!sc.prose.trim() && at > 0 && at < sc.prose.length
+        return <div className="assist-menu" role="menu" aria-label="Scene actions">
+          {item(close, sc.pinned ? 'Unlock' : 'Lock', sc.pinned ? 'Locked: the assistant won’t redraft it' : 'The assistant won’t redraft a locked scene', () => tx(sc.pinned ? 'Unlock scene' : 'Lock scene', () => update<'scene'>(sc.id, x => { x.pinned = !x.pinned })), { icon: sc.pinned ? 'unlock' : 'lock' })}
+          {item(close, 'Leave out of export', sc.exclude ? 'Skipped when you export' : 'Keep it in the project, skip it when you export', () => update<'scene'>(sc.id, x => { x.exclude = !x.exclude }), { icon: 'eye', on: !!sc.exclude })}
+          <div className="menu-sep" />
+          {item(close, 'Split at the cursor', canSplit ? 'The text after the cursor becomes a new scene' : 'Put the cursor where the new scene should start', () => splitAt(sc, at), { icon: 'split', disabled: !canSplit })}
+          {item(close, 'Merge with the next scene', next ? `Appends “${next.title || 'Untitled scene'}” to this one` : 'This is the last scene of the story', () => mergeNext(sc), { icon: 'merge', disabled: !next })}
+          <div className="menu-sep" />
+          {item(close, 'History…', `${plural(sc.snapshots.length, 'saved version')} of the text, and every change`, onHistory, { icon: 'history' })}
+          {item(close, 'Delete scene', 'You can undo it', onDelete, { icon: 'trash', danger: true })}
+        </div>
+      }}
+    </Popover>
+  )
+}
+
+// ---------------- history: versions of the text, and every change ----------------
+
+function HistoryDialog({ sc, onClose }: { sc: Scene; onClose: () => void }) {
+  const [tab, setTab] = useState<'text' | 'all'>('text')
+  const [cmp, setCmp] = useState<number>()
+  const [name, setName] = useState('')
+  const parts = useMemo(() => (cmp === undefined ? [] : diffText(sc.snapshots[cmp]?.text || '', sc.prose)), [cmp, sc])
+  useEffect(() => { const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }; addEventListener('keydown', esc); return () => removeEventListener('keydown', esc) }, [onClose])
+  const save = () => { tx('Save a version', () => update<'scene'>(sc.id, x => { x.snapshots = [{ text: x.prose, at: new Date().toISOString(), name: name.trim() || `Version ${x.snapshots.filter(t => t.name).length + 1}` }, ...x.snapshots] })); setName('') }
+  const restore = (j: number) => { const t = sc.snapshots[j]; tx('Restore a version', () => update<'scene'>(sc.id, x => { const cur = x.prose; x.prose = t.text; x.snapshots[j] = { text: cur, at: new Date().toISOString(), name: 'Before restore' } })); setCmp(undefined) }
+  return (
+    <div className="overlay" onMouseDown={onClose}>
+      <div className="palette ed-hist" onMouseDown={e => e.stopPropagation()} role="dialog" aria-label="History">
+        <div className="ed-hist-h"><div className="grow clip"><b>History</b><span className="muted small"> · {sc.title || 'Untitled scene'}</span></div>
+          <div className="seg"><button className={tab === 'text' ? 'on' : ''} onClick={() => setTab('text')}>Versions of the text{sc.snapshots.length ? ` · ${sc.snapshots.length}` : ''}</button><button className={tab === 'all' ? 'on' : ''} onClick={() => setTab('all')}>Every change</button></div>
+          <button className="x" aria-label="Close" onClick={onClose}>×</button></div>
+        <div className="ed-hist-b">
+          {tab === 'all' ? <History id={sc.id} render={prev => typeof prev.prose === 'string' && prev.prose !== sc.prose ? <div className="review ed-hist-diff"><Diff parts={diffText(prev.prose, sc.prose)} /></div>
+            : <p className="small muted">The text was the same as now; the card or the properties changed.</p>} /> : <>
+            <div className="row nowrap"><input className="f" value={name} placeholder="Name this version (optional): before the cut" onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') save() }} />
+              <button className="btn" disabled={!sc.prose.trim()} onClick={save}>Save this version</button></div>
+            <p className="small muted">Drafts, rewrites, splits, merges and accepted suggestions keep the text they replaced here automatically.</p>
+            {!sc.snapshots.length && <p className="small muted">No earlier versions yet.</p>}
+            {sc.snapshots.map((t, j) => (
+              <div key={j} className={'ed-ver' + (cmp === j ? ' on' : '')}>
+                <div className="grow"><b className="small">{t.name || 'Automatic'}</b><div className="small muted">{new Date(t.at).toLocaleString()} · {plural(words(t.text), 'word')}</div></div>
+                <button className="btn sm ghost" onClick={() => setCmp(cmp === j ? undefined : j)}>{cmp === j ? 'Hide' : 'Compare with now'}</button>
+                <button className="btn sm" onClick={() => restore(j)}>Restore</button>
+              </div>
+            ))}
+            {cmp !== undefined && <><div className="small"><del>removed since</del> · <ins>added since</ins></div><div className="review ed-hist-diff"><Diff parts={parts} /></div></>}
+          </>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CompareDialog({ title, before, after, onClose }: { title: string; before: string; after: string; onClose: () => void }) {
+  const parts = useMemo(() => diffText(before, after), [before, after])
+  useEffect(() => { const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }; addEventListener('keydown', esc); return () => removeEventListener('keydown', esc) }, [onClose])
+  return (
+    <div className="overlay" onMouseDown={onClose}>
+      <div className="palette ed-hist" onMouseDown={e => e.stopPropagation()} role="dialog" aria-label={title}>
+        <div className="ed-hist-h"><b className="grow">{title}</b><span className="small"><del>your text</del> · <ins>the new draft</ins></span><button className="x" aria-label="Close" onClick={onClose}>×</button></div>
+        <div className="ed-hist-b"><div className="review ed-hist-diff" style={{ maxHeight: 'none' }}><Diff parts={parts} /></div></div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------- focus mode ----------------
+
+function Focus({ sc, editor, onExit }: { sc: Scene; editor: ReactNode; onExit: () => void }) {
   useEffect(() => { const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onExit() }; addEventListener('keydown', esc); return () => removeEventListener('keydown', esc) }, [onExit])
   return (
-    <div className="focus-mode" style={{ ['--paper' as string]: paper + 'px' }}>
-      <div className="focus-bar">
-        <span>{words(sc.prose).toLocaleString()} words</span>
-        <select className="f" style={{ width: 'auto', padding: '2px 24px 2px 6px' }} value={paper} aria-label="Page width" onChange={e => { setPaper(e.target.value); store('canon.paper', e.target.value) }}>
-          <option value="560">Narrow</option><option value="700">Medium</option><option value="880">Wide</option></select>
-        <button className="btn sm" onClick={onExit}>Leave <kbd>esc</kbd></button>
-      </div>
+    <div className="focus-mode">
+      <div className="focus-bar"><span>{plural(words(sc.prose), 'word')}</span><button className="btn sm" onClick={onExit}>Leave <kbd>esc</kbd></button></div>
       <div className="doc"><h1>{sc.title}</h1>{editor}</div>
     </div>
   )
 }
-
-function Snapshots({ sc }: { sc: Scene }) {
-  const [cmp, setCmp] = useState<number>()
-  const parts = useMemo(() => (cmp === undefined ? [] : diffText(sc.snapshots[cmp]?.text || '', sc.prose)), [cmp, sc])
-  return <>
-    <Popover className="right" trigger={o => <button className="btn sm ghost" onClick={o}>Snapshots{sc.snapshots.length ? ` · ${sc.snapshots.length}` : ''}</button>}>{close => <div className="stack" style={{ gap: 4, width: 320, padding: 4 }}>
-      <span className="lbl">Earlier versions of the text. Builds, rewrites, splits and accepted changes keep one automatically.</span>
-      {!sc.snapshots.length && <p className="muted small">None yet. Type /snapshot to take one.</p>}
-      {sc.snapshots.map((t, k) => (
-        <div key={k} className="row nowrap" style={{ padding: '4px 6px', borderTop: '1px solid var(--line)' }}>
-          <div className="grow"><b className="small">{t.name || 'Automatic'}</b><div className="small muted">{new Date(t.at).toLocaleString()} · {words(t.text)} words</div></div>
-          <button className="btn sm ghost" onClick={() => { setCmp(k); close() }}>Compare</button>
-          <button className="btn sm" onClick={() => { tx('Restore snapshot', () => update<'scene'>(sc.id, x => { const cur = x.prose; x.prose = t.text; x.snapshots[k] = { text: cur, at: new Date().toISOString(), name: 'Before restore' } })); close() }}>Restore</button>
-        </div>
-      ))}
-    </div>}</Popover>
-    {cmp !== undefined && <div className="overlay" onMouseDown={() => setCmp(undefined)}>
-      <div className="palette" style={{ width: 'min(820px, calc(100vw - 32px))' }} onMouseDown={e => e.stopPropagation()} role="dialog" aria-label="Compare">
-        <div className="row" style={{ padding: '12px 16px', borderBottom: '1px solid var(--line)' }}><b>{sc.snapshots[cmp].name || 'Automatic snapshot'}</b><span className="muted small">{new Date(sc.snapshots[cmp].at).toLocaleString()} → now</span><span className="grow" />
-          <span className="small"><del style={{ color: 'var(--del)' }}>removed</del> · <ins style={{ color: 'var(--ins)', textDecoration: 'none' }}>added</ins></span><button className="x" onClick={() => setCmp(undefined)}>×</button></div>
-        <div className="review" style={{ maxHeight: '64vh', overflowY: 'auto', padding: '16px 22px', fontSize: 16 }}><Diff parts={parts} /></div>
-      </div>
-    </div>}
-  </>
-}
-
-// ---------------- the plan (scene card) ----------------
-
-function Plan({ s, st, sc, onDerive, busy }: { s: State; st: Story; sc: Scene; onDerive: () => void; busy: boolean }) {
-  const edit = (fn: (x: Scene) => void) => update<'scene'>(sc.id, fn)
-  const p = project(s)
-  const labels = p.labels || {}
-  const empty = !sc.card.trim()
-  const [open, setOpen] = useState(empty && !sc.prose.trim())
-  return (
-    <details className="plan" open={open} onToggle={e => setOpen((e.target as HTMLDetailsElement).open)}>
-      <summary>
-        <span className="kicker">Plan</span>
-        <span className="syn">{sc.card || (sc.prose.trim() ? 'No plan yet: derive one from the text' : 'What happens in this scene?')}</span>
-        <span className={'status-pill ' + (sc.status || 'todo')}>{STATUSES.find(x => x.id === (sc.status || 'todo'))!.label}</span>
-      </summary>
-      {open && <div className="plan-body">
-        {empty && sc.prose.trim() && <div className="card tint row"><span className="grow small">The plan is what rebuilds, checks and the timeline work from.</span><button className="btn sm ai" disabled={busy} onClick={onDerive}>✦ Derive from the text</button></div>}
-        <Area label={st.form === 'documents' ? 'What the document is and does' : 'What happens'} value={sc.card} placeholder="What happens, and what changes" onChange={v => edit(x => { x.card = v })} />
-        {st.form !== 'documents' && <Area label="What each person wants" value={sc.wants} onChange={v => edit(x => { x.wants = v })} />}
-        <Area label="Must land · one per line" value={sc.mustLand.join('\n')} onChange={v => edit(x => { x.mustLand = v.split('\n') })} />
-        <div className="grid3">
-          <label className="field"><span className="lbl">Status</span><select className="f" value={sc.status || 'todo'} onChange={e => edit(x => { x.status = e.target.value as SceneStatus })}>{STATUSES.map(x => <option key={x.id} value={x.id}>{x.label}</option>)}</select></label>
-          <label className="field"><span className="lbl">Beat</span><select className="f" value={sc.beat} onChange={e => edit(x => { x.beat = e.target.value })}><option value="">None</option>{[...new Set([...st.beats, sc.beat].filter(Boolean))].map(b => <option key={b}>{b}</option>)}</select></label>
-          <label className="field"><span className="lbl">Target words</span><input className="f" type="number" min={0} step={100} value={sc.target || ''} onChange={e => edit(x => { x.target = Number(e.target.value) || undefined })} /></label>
-          <label className="field"><span className="lbl">Tags</span><input className="f" value={(sc.tags || []).join(', ')} placeholder="comma-separated" onChange={e => edit(x => { x.tags = e.target.value.split(',').map(t => t.trimStart()) })} /></label>
-        </div>
-        {(p.sceneFields || []).length > 0 && <div className="grid3">{p.sceneFields!.map(f => {
-          const v = sc.meta?.[f.key] || '', set = (val: string) => edit(x => { x.meta = { ...x.meta, [f.key]: val } })
-          return <label key={f.key} className="field"><span className="lbl">{f.label}</span>
-            {f.kind === 'check' ? <input type="checkbox" checked={v === 'yes'} onChange={e => set(e.target.checked ? 'yes' : '')} />
-              : f.kind === 'list' ? <select className="f" value={v} onChange={e => set(e.target.value)}><option value="" />{(f.options || []).map(o => <option key={o}>{o}</option>)}</select>
-                : <input className="f" type={f.kind === 'date' ? 'date' : 'text'} value={v} onChange={e => set(e.target.value)} />}</label>
-        })}</div>}
-        <div className="field"><span className="lbl">Label</span><div className="row" style={{ gap: 6 }}>
-          {LABELS.map(l => <button key={l} className="dot" title={labels[l] || l} aria-label={labels[l] || l} aria-pressed={sc.label === l} style={{ width: 18, height: 18, border: 0, background: labelColor(l), outline: sc.label === l ? '2px solid var(--ink)' : undefined, outlineOffset: 2 }} onClick={() => edit(x => { x.label = x.label === l ? undefined : l })} />)}
-          {sc.label && <span className="small muted">{labels[sc.label] || sc.label}</span>}</div></div>
-        <div className="field"><span className="lbl">Cast and setting</span><div className="row" style={{ gap: 4 }}>
-          {sc.cast.map(c => <span key={c} className="chip on"><a href={'#world/' + c} style={{ textDecoration: 'none' }}>{nameOf(s, c) || 'Missing'}</a><button className="x" style={{ fontSize: 13, padding: 0, color: 'inherit' }} aria-label="Remove" onClick={() => edit(x => { x.cast = x.cast.filter(y => y !== c) })}>×</button></span>)}
-          <CastPicker s={s} cast={sc.cast} onPick={id => edit(x => { x.cast.push(id) })} /></div></div>
-        <div className="field"><span className="lbl">Events and facts it touches</span><div className="row" style={{ gap: 4 }}>
-          {Object.entries(sc.links).map(([id, how]) => <span key={id} className="chip on" title={how === 'on' ? 'On the page' : 'Felt: the effect, not the cause'}>
-            <a href={'#' + hrefOf(s, id)} style={{ textDecoration: 'none' }}>{nameOf(s, id) || 'Missing'}</a>
-            <button className="x" style={{ fontSize: 11, padding: '0 2px', color: 'inherit' }} onClick={() => edit(x => { x.links[id] = how === 'on' ? 'felt' : 'on' })}>{how === 'on' ? 'on page' : 'felt'}</button>
-            <button className="x" style={{ fontSize: 13, padding: 0, color: 'inherit' }} aria-label="Remove" onClick={() => edit(x => { delete x.links[id] })}>×</button></span>)}
-          <RecordPicker s={s} kinds={['fact']} label="+ Event or fact" exclude={Object.keys(sc.links)} onPick={id => edit(x => { x.links[id] = 'on' })} /></div></div>
-        <div className="row small">
-          <label className="row nowrap"><input type="checkbox" checked={sc.pinned} onChange={e => edit(x => { x.pinned = e.target.checked })} />Pinned: batch builds skip it</label>
-          <label className="row nowrap"><input type="checkbox" checked={!sc.exclude} onChange={e => edit(x => { x.exclude = !e.target.checked })} />Include in compile</label>
-          <span className="grow" />
-          {sc.card.trim() && sc.prose.trim() && <button className="btn sm ghost" disabled={busy} onClick={onDerive}>✦ Re-derive</button>}
-          <button className="btn sm ghost danger" onClick={() => { const next = scenesOf(s, st.id).find(x => x.id !== sc.id); tx(`Delete scene “${sc.title}”`, () => remove(sc.id)); go(next ? `write/${st.id}/${next.id}` : 'story/' + st.id) }}>Delete scene</button>
-        </div>
-      </div>}
-    </details>
-  )
-}
-
-function CastPicker({ s, cast, onPick }: { s: State; cast: string[]; onPick: (id: string) => void }) {
-  return <Popover trigger={o => <button className="chip dash" onClick={o}>+ Add</button>}>{close => <>
-    {typeIds(s).map(t => { const xs = entities(s, t).filter(e => !cast.includes(e.id)); return xs.length ? <div key={t}><span className="lbl" style={{ padding: '6px 10px', display: 'block' }}>{typeDef(s, t).label}</span>
-      {xs.map(e => <button key={e.id} className="menu-item" onClick={() => { onPick(e.id); close() }}>{e.name}</button>)}</div> : null })}
-  </>}</Popover>
-}
-

@@ -56,7 +56,7 @@ export function FindView({ s }: { s: State }) {
         </div>
         {results.map(r => (
           <div key={r.sc.id + r.field} className="card" style={{ gap: 6 }}>
-            <div className="row"><a href={`#write/${r.sc.story}/${r.sc.id}`} style={{ textDecoration: 'none' }}><span className="mono muted">{sceneRef(s, r.sc)}</span> <b>{r.sc.title}</b></a>
+            <div className="row"><a href={'#scene/' + r.sc.id} style={{ textDecoration: 'none' }}><span className="mono muted">{sceneRef(s, r.sc)}</span> <b>{r.sc.title}</b></a>
               {r.field !== 'prose' && <span className="chip">{FIELDS.find(f => f.id === r.field)!.label}</span>}<span className="grow" /><span className="small muted">{r.ms.length}</span></div>
             {r.ms.slice(0, 50).map((m, i) => {
               const t = r.sc[r.field]

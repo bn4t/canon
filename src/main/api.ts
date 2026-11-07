@@ -70,7 +70,7 @@ export function createApi(o: ApiOptions) {
     'POST /api/records': async r => { o.store.save(await body<ChangeSet>(r)); return none() },
     'POST /api/undo': () => json(o.store.step(true)),
     'POST /api/redo': () => json(o.store.step(false)),
-    'GET /api/history': (_, u) => json(o.store.history(u.searchParams.get('record') || '', Number(u.searchParams.get('limit')) || 50)),
+    'GET /api/history': (_, u) => { const rec = u.searchParams.get('record'), n = Number(u.searchParams.get('limit')); return json(rec ? o.store.history(rec, n || 50) : o.store.recent(n || 8)) },
 
     // The story folder is chosen with a native picker and only ever read.
     'POST /api/root': async () => { const p = await o.host.pickFolder('Choose your story folder'); if (p) root = p; return json({ root: root || '', picked: !!p }) },

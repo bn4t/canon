@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  update, remove, tx, applyProposal, isApplied, create, get, getState, list, nameOf, entities, events, plainFacts, stories, allScenes, newQuestion, QKINDS, GUIDE_KINDS,
-  type State, type Question, type Proposal, type Guide, type GuideKind,
+  update, remove, tx, create, get, getState, list, nameOf, entities, events, plainFacts, stories, scenesOf, allScenes, newQuestion, eventCode, showToast, QKINDS, GUIDE_KINDS,
+  type State, type Question, type Guide, type GuideKind, type Fact, type KCell, type KState,
 } from '../store.ts'
-import { complete, completeJSON } from '../ai.ts'
-import { questionOptions, resolveQuestion, findProblems, normalizeProposal, parseProposals, stripProposals, type FoundQ } from '../prompts.ts'
-import { useJob, JobStatus, Area, Md, Proposals, Popover } from '../ui.tsx'
+import { completeJSON, useAI, aiReady } from '../ai.ts'
+import { findProblems, normalizeProposal, type FoundQ } from '../prompts.ts'
+import { useJob, JobStatus, Popover, ConnectPrompt, Spark, Icon, go, ago } from '../ui.tsx'
+import './timeline.css'
+import './questions.css'
 
 /** Where a record lives in the app. */
 export function hrefOf(s: State, id: string): string {
@@ -14,7 +16,7 @@ export function hrefOf(s: State, id: string): string {
   if (r.kind === 'entity') return 'world/' + id
   if (r.kind === 'fact') return 'timeline/' + id
   if (r.kind === 'story') return 'story/' + id
-  if (r.kind === 'scene') return `write/${r.story}/${id}`
+  if (r.kind === 'scene') return 'scene/' + id
   if (r.kind === 'question') return 'questions/' + id
   return ''
 }
@@ -40,88 +42,119 @@ function PickList({ s, exclude, kinds, onPick }: { s: State; exclude: string[]; 
   </div>
 }
 
-// ---------------- the feedback loop ----------------
+// ---------------- small shared pieces ----------------
 
+/** A fact's code: E-number for events (stable), F + position for undated facts. */
+export const factCode = (s: State, id: string) => { const f = get(s, id, 'fact'); if (!f) return ''; return f.at !== undefined ? eventCode(s, id) : 'F' + (plainFacts(s).findIndex(x => x.id === id) + 1) }
+/** Short label for a record in a chip: a code for facts, the name otherwise. */
+export const shortName = (s: State, id: string) => get(s, id, 'fact') ? factCode(s, id) : nameOf(s, id) || 'Missing'
 
-/** One question: raise it, get options, decide, and write the decision into the canon. */
-export function QuestionCard({ s, q, compact }: { s: State; q: Question; compact?: boolean }) {
-  const job = useJob()
-  const [props, setProps] = useState<Proposal[]>([])
-  const edit = (fn: (x: Question) => void) => update<'question'>(q.id, fn)
-  const suggest = () => job.run('Thinking of ways to resolve it…', async sig => {
-    const opts = await completeJSON<Question['options']>('assist', questionOptions(getState(), q), sig)
-    edit(x => { x.options = opts.map(o => ({ ...o, proposal: o.proposal ? normalizeProposal(getState(), o.proposal) : undefined })) })
-  })
-  const choose = (i: number) => {
-    const o = q.options[i], val = `${o.title}: ${o.detail}`
-    if (q.answer === val) return edit(x => { x.answer = '' })
-    tx('Decide', () => { edit(x => { x.answer = val }); if (o.proposal && !isApplied(getState(), o.proposal)) applyProposal(o.proposal) })
+const AVATAR = ['var(--l-blue)', 'var(--l-red)', 'var(--l-purple)', 'var(--l-green)', 'var(--l-orange)', 'var(--l-yellow)']
+export const avatarColor = (name: string) => AVATAR[[...name].reduce((n, c) => n + c.charCodeAt(0), 0) % AVATAR.length]
+export const Av = ({ name, size = 20 }: { name: string; size?: number }) =>
+  <span className="kav" style={{ background: avatarColor(name), width: size, height: size, fontSize: size * .52 }} aria-hidden="true">{(name.trim()[0] || '?').toUpperCase()}</span>
+
+/** A button that asks the assistant for something; with none connected it opens a Connect prompt instead. */
+export function AIButton({ label, busy, onClick, className = 'btn sm soft', disabled, title }: { label: ReactNode; busy?: string; onClick: () => void; className?: string; disabled?: boolean; title?: string }) {
+  const ready = aiReady(useAI())
+  const face = <>{busy ? <span className="spinner" /> : <Spark size={13} />}{busy ? 'Working…' : label}</>
+  if (!ready) return <Popover className="right" trigger={o => <button className={className} title={title} onClick={o}>{face}</button>}>{close => <div style={{ width: 330 }}><ConnectPrompt compact onGo={close} /></div>}</Popover>
+  return <button className={className} title={title} disabled={disabled || !!busy} onClick={onClick}>{face}</button>
+}
+
+// ---------------- what someone knows: one editor, used by the event inspector, the knowledge lens and character sheets ----------------
+
+export const KSTATES: { id: KState; label: string }[] = [{ id: 'knows', label: 'Knows' }, { id: 'almost', label: 'Almost' }, { id: 'believes', label: 'Believes otherwise' }, { id: 'never', label: 'Never' }, { id: '', label: 'Not decided' }]
+export const kLabel = (st: KState) => KSTATES.find(k => k.id === st)?.label || 'Not decided'
+const noteLabel = (st: KState) => st === 'believes' ? 'What they believe instead' : st === 'almost' ? 'How close they get' : 'Note'
+
+/** Edit what one entity knows of one fact: state, a note, and where they learn it. */
+export function KnowledgeEditor({ s, f, who }: { s: State; f: Fact; who: string }) {
+  const c: KCell = f.knows[who] || { state: '' }
+  const name = nameOf(s, who) || 'Someone'
+  const set = (patch: Partial<KCell>, label?: string) => {
+    const run = () => update<'fact'>(f.id, x => {
+      const next = { ...c, ...patch }
+      if (!next.state && !next.note && !next.from) delete x.knows[who]; else x.knows[who] = next
+    })
+    if (label) tx(label, run, false); else run()
   }
-  const writeIn = () => job.run('Working out what changes…', async sig => {
-    const out = await completeJSON<Proposal[]>('assist', resolveQuestion(getState(), get(getState(), q.id, 'question')!), sig)
-    setProps(out.map(p => normalizeProposal(getState(), p)))
-    if (!out.length) job.setErr('Nothing to change: the canon already says this.')
-  })
-  const kind = QKINDS.find(k => k.id === q.type)!
-  const resolved = !!q.answer
   return (
-    <div className={'card q-card ' + q.type + (q.dismissed ? ' done' : resolved ? ' decided' : '')}>
-      <div className="row">
-        <Popover trigger={o => <button className="kicker" style={{ border: 0, background: 'none', padding: 0 }} title="Change the kind" onClick={o}>{resolved ? `${kind.label} · decided` : kind.label}{q.by !== 'you' ? ` · from ${q.by === 'ai' ? 'the assistant' : 'a check'}` : ''}</button>}>
-          {close => <>{QKINDS.map(k => <button key={k.id} className={'menu-item' + (k.id === q.type ? ' on' : '')} onClick={() => { edit(x => { x.type = k.id }); close() }}>{k.label}</button>)}</>}
-        </Popover>
-        <span className="grow" />
-        {q.dismissed ? <button className="btn sm ghost" onClick={() => edit(x => { x.dismissed = false })}>Reopen</button>
-          : !resolved && <button className="btn sm ghost" title="Not a real problem" onClick={() => tx('Dismiss question', () => edit(x => { x.dismissed = true }))}>Dismiss</button>}
-        <button className="x hover-only" aria-label="Delete" title="Delete" onClick={() => tx('Delete question', () => remove(q.id))}>×</button>
-      </div>
-      <textarea className="inline" value={q.text} placeholder="What's unresolved?" autoFocus={!q.text} aria-label="Question"
-        onChange={e => edit(x => { x.text = e.target.value })} />
-      {!compact && <div className="row" style={{ gap: 4 }}>
-        {q.about.map(id => <span key={id} className="chip"><a href={'#' + hrefOf(s, id)} style={{ textDecoration: 'none' }}>{nameOf(s, id) || 'Missing'}</a>
-          <button className="x" style={{ fontSize: 13, padding: 0 }} aria-label="Detach" onClick={() => edit(x => { x.about = x.about.filter(y => y !== id) })}>×</button></span>)}
-        <RecordPicker s={s} label={q.about.length ? '+' : '+ About…'} exclude={q.about} onPick={id => edit(x => { x.about.push(id) })} />
-      </div>}
-      {q.options.map((o, i) => (
-        <button key={i} className={'opt' + (q.answer === `${o.title}: ${o.detail}` ? ' on' : '')} onClick={() => choose(i)}>
-          <b>{o.title}</b><span>{o.detail}</span>{o.proposal && <span className="ai-text small">Writes it into the canon</span>}
-        </button>
-      ))}
-      {!q.dismissed && <Area value={q.answer} placeholder="Your decision: pick an option or write your own" onChange={v => edit(x => { x.answer = v })} />}
-      <JobStatus job={job} />
-      <Proposals s={s} items={props} onChange={setProps} label="Write it into the canon" />
-      {!q.dismissed && <div className="row">
-        <button className="btn sm soft" disabled={!!job.busy || !q.text.trim()} onClick={suggest}>✦ {q.options.length ? 'Other options' : 'Suggest options'}</button>
-        {resolved && <button className="btn sm soft" disabled={!!job.busy} title="Propose the canon changes this decision implies" onClick={writeIn}>✦ Write into the canon</button>}
-      </div>}
+    <div className="kedit">
+      <div className="row nowrap"><Av name={name} /><span className="grow"><b>{name}</b><span className="small muted clip" style={{ display: 'block' }}>{f.text || 'Untitled'}</span></span></div>
+      <div className="kopts">{KSTATES.map(k => (
+        <button key={k.id} className={'kst ' + (k.id || 'unset') + (c.state === k.id ? ' on' : '')} aria-pressed={c.state === k.id}
+          onClick={() => set({ state: k.id }, `${name}: ${k.label.toLowerCase()}`)}>{k.label}</button>))}</div>
+      {c.state && <label className="field"><span className="lbl">{noteLabel(c.state)}</span>
+        <input className="f" value={c.note || ''} placeholder="Optional" onChange={e => set({ note: e.target.value || undefined })} /></label>}
+      {c.state && c.state !== 'never' && <label className="field"><span className="lbl">From</span>
+        <select className="f" value={c.from || ''} onChange={e => set({ from: e.target.value || undefined }, `${name} learns it`)}>
+          <option value="">From the start</option>
+          {stories(s).map(st => <optgroup key={st.id} label={st.title}>
+            <option value={st.id}>{st.title} (the whole story)</option>
+            {scenesOf(s, st.id).map((sc, i) => <option key={sc.id} value={sc.id}>{i + 1}. {sc.title}</option>)}
+          </optgroup>)}
+        </select></label>}
     </div>
   )
 }
 
-/** Ask the assistant for plot holes, contradictions and open questions; they land in the Questions inbox. */
-export function FindProblems({ s, focus, label = 'Find problems' }: { s: State; focus?: string; label?: string }) {
-  const job = useJob()
-  const [found, setFound] = useState<string[]>([])
-  const run = () => job.run('Looking for holes and contradictions…', async sig => {
-    const out = await completeJSON<FoundQ[]>('assist', findProblems(getState(), focus), sig)
-    const ids: string[] = []
-    tx(`Raise ${out.length} question${out.length === 1 ? '' : 's'}`, () => {
-      for (const f of out) ids.push(create('question', newQuestion({
-        type: (['question', 'hole', 'contradiction'] as const).includes(f.kind) ? f.kind : 'question', text: f.text, by: 'ai',
-        about: [...new Set([...(f.about || []).filter(id => getState().recs[id]), ...(focus ? [focus] : [])])],
-        options: (f.options || []).map(o => ({ title: o.title, detail: o.detail, proposal: o.proposal ? normalizeProposal(getState(), o.proposal) : undefined })),
-      })))
-    }, false)
-    setFound(ids)
-    if (!out.length) job.setErr('Nothing found. The canon holds up here.')
-  })
-  const qs = found.map(id => get(s, id, 'question')).filter(Boolean) as Question[]
+/** A knowledge state as a pill that opens the editor. Empty cells stay empty: "+ Set" shows on hover. */
+export function KnowledgeChip({ s, f, who, withNote }: { s: State; f: Fact; who: string; withNote?: boolean }) {
+  const c = f.knows[who]
+  const st = c?.state || ''
+  return <>
+    <Popover trigger={o => st
+      ? <button className={'kst ' + st} title={c?.note} onClick={o}>{kLabel(st)}{c?.from && st !== 'never' ? ` · ${nameOf(s, c.from)}` : ''}</button>
+      : <button className={'kst-set' + (c?.note ? ' has' : '')} onClick={o}>{c?.note ? 'Not decided' : '+ Set'}</button>}>
+      {() => <KnowledgeEditor s={s} f={f} who={who} />}
+    </Popover>
+    {withNote && c?.note && <span className="knote">{c.note}</span>}
+  </>
+}
+
+// ---------------- questions: raised anywhere, decided in Questions ----------------
+
+const SOURCE = { you: 'you', ai: 'assistant', check: 'continuity check' } as const
+export const sourceOf = (q: Question) => SOURCE[q.by] || 'you'
+export const kindLabel = (q: Question) => QKINDS.find(k => k.id === q.type)?.label || 'Open question'
+
+/** One question as a compact row (character sheets, the event inspector): deciding happens in Questions. */
+export function QuestionCard({ s, q, compact }: { s: State; q: Question; compact?: boolean }) {
+  const status = q.dismissed ? 'Dismissed' : q.answer ? 'Decided' : ''
   return (
-    <div className="stack">
-      <div className="row"><button className="btn soft" disabled={!!job.busy} onClick={run}>✦ {found.length ? 'Look again' : label}</button>
-        {qs.length > 0 && <a className="small muted" href="#questions">All questions</a>}</div>
-      <JobStatus job={job} />
-      {qs.map(q => <QuestionCard key={q.id} s={s} q={q} compact />)}
+    <a className={'qrow' + (status ? ' done' : '') + (compact ? ' compact' : '')} href={'#questions/' + q.id}>
+      <span className="row nowrap" style={{ gap: 8 }}><span className={'tag ' + q.type}>{kindLabel(q)}</span>
+        <span className="lbl" style={{ fontWeight: 400 }}>{status || `${sourceOf(q)} · ${ago(q.at)}`}</span><span className="grow" />{!status && <span className="qrow-go">Decide<Icon name="right" size={12} /></span>}</span>
+      <span className="qrow-text">{q.text || 'Untitled question'}</span>
+      {status === 'Decided' && <span className="small muted clip">{q.answer}</span>}
+    </a>
+  )
+}
+
+/** Look for plot holes, contradictions and open questions; they land in Questions (one undo step). Returns the new question ids. */
+export async function findProblemsInto(focus: string | undefined, signal: AbortSignal): Promise<string[]> {
+  const out = await completeJSON<FoundQ[]>('check', findProblems(getState(), focus), signal)
+  const ids: string[] = []
+  tx(`Find problems: ${out.length} question${out.length === 1 ? '' : 's'}`, () => {
+    for (const f of out) ids.push(create('question', newQuestion({
+      type: (['question', 'hole', 'contradiction'] as const).includes(f.kind) ? f.kind : 'question', text: f.text, by: 'ai',
+      about: [...new Set([...(f.about || []).filter(id => getState().recs[id]), ...(focus ? [focus] : [])])],
+      options: (f.options || []).map(o => ({ title: o.title, detail: o.detail, proposal: o.proposal ? normalizeProposal(getState(), o.proposal) : undefined })),
+    })))
+  }, false)
+  if (ids.length) showToast(`Found ${ids.length} problem${ids.length === 1 ? '' : 's'}. They’re in Questions.`, true, { label: 'Open', run: () => go('questions/' + ids[0]) })
+  else showToast('Find problems: nothing found. The canon holds up here.')
+  return ids
+}
+
+/** The Find problems button: its results go to Questions, with a toast that links there. */
+export function FindProblems({ s: _s, focus, label = 'Find problems' }: { s: State; focus?: string; label?: string }) {
+  const job = useJob()
+  return (
+    <div className="stack" style={{ gap: 6 }}>
+      <div><AIButton label={label} busy={job.busy} onClick={() => job.run('Looking for problems…', sig => findProblemsInto(focus, sig).then(() => {}))} /></div>
+      {job.err && <JobStatus job={job} />}
     </div>
   )
 }
@@ -141,11 +174,11 @@ export function History({ id, render }: { id: string; render?: (prev: Record<str
   return (
     <div className="stack" style={{ gap: 6 }}>
       {vs.map(v => (
-        <div key={v.seq} className="card" style={{ padding: 10, gap: 6 }}>
-          <div className="row"><b>{v.label || 'Edit'}</b><span className="grow" /><span className="small muted">{new Date(v.at).toLocaleString()}</span></div>
+        <div key={v.seq} className="hist-row">
+          <div className="row nowrap"><b className="clip grow">{v.label || 'Edit'}</b><span className="small muted" title={new Date(v.at).toLocaleString()}>{ago(v.at)}</span></div>
           {v.prev ? <div className="row">
             <button className="btn sm ghost" onClick={() => setOpen(open === v.seq ? undefined : v.seq)}>{open === v.seq ? 'Hide' : 'Show before'}</button>
-            <button className="btn sm" onClick={() => restore(v.prev!)}>Restore the version before this</button>
+            <button className="btn sm ghost" onClick={() => restore(v.prev!)}>Restore the version before this</button>
           </div> : <span className="small muted">Created</span>}
           {open === v.seq && v.prev && (render ? render(v.prev) : <pre className="pre small mono" style={{ margin: 0, maxHeight: 240, overflow: 'auto' }}>{JSON.stringify(v.prev, null, 2)}</pre>)}
         </div>
@@ -154,54 +187,7 @@ export function History({ id, render }: { id: string; render?: (prev: Record<str
   )
 }
 
-/** A persisted conversation (chat record): log, streaming reply, composer. */
-export function ChatPane({ s, chatId, system, proposals, placeholder, empty, persona, queued, onQueued, starters, autoFocus = true, footer }: {
-  s: State; chatId: string; system: () => string; proposals?: boolean; placeholder: string; empty?: ReactNode; persona?: string; queued?: string; onQueued?: () => void; starters?: string[]; autoFocus?: boolean; footer?: ReactNode
-}) {
-  const chat = get(s, chatId, 'chat')
-  const job = useJob()
-  const [draft, setDraft] = useState('')
-  const [live, setLive] = useState('')
-  const end = useRef<HTMLDivElement>(null)
-  useEffect(() => { end.current?.scrollIntoView({ block: 'end' }) }, [chat?.messages.length, live])
-  const send = (text: string) => {
-    if (!text.trim() || job.busy) return
-    update<'chat'>(chatId, x => { x.messages.push({ role: 'user', text }); x.at = new Date().toISOString(); if (x.messages.length === 1 && proposals) x.title = text.slice(0, 60) })
-    setDraft('')
-    job.run(persona ? `${persona} is thinking…` : 'Thinking…', async sig => {
-      const msgs = get(getState(), chatId, 'chat')!.messages
-      const out = await complete('chat', system(), msgs.map(m => ({ role: m.role, content: m.text })), t => setLive(proposals ? stripProposals(t) : t), sig)
-      update<'chat'>(chatId, x => { x.messages.push({ role: 'assistant', text: proposals ? stripProposals(out) : out, proposals: proposals ? parseProposals(getState(), out) : undefined }) })
-    }).finally(() => setLive(''))
-  }
-  useEffect(() => { if (queued) { onQueued?.(); send(queued) } }, [queued]) // eslint-disable-line react-hooks/exhaustive-deps
-  if (!chat) return null
-  const setProps = (i: number, ps: Proposal[]) => update<'chat'>(chatId, x => { x.messages[i].proposals = ps })
-  const reply = (text: string) => (persona ? <div className="msg persona">{text}</div> : <div className="msg"><Md text={text} /></div>)
-  return (
-    <div className="stack" style={{ gap: 12 }}>
-      <div className="chat">
-        {!chat.messages.length && empty}
-        {!chat.messages.length && starters && <div className="row" style={{ gap: 6 }}>{starters.map(t => <button key={t} className="chip" onClick={() => send(t)}>{t}</button>)}</div>}
-        {chat.messages.map((m, i) => (
-          <div key={i} className="stack" style={{ gap: 6 }}>
-            {m.role === 'user' ? <div className="msg user">{m.text}</div> : reply(m.text)}
-            {m.proposals && <Proposals s={s} items={m.proposals} onChange={ps => setProps(i, ps)} label="Proposed" />}
-          </div>
-        ))}
-        {live && reply(live)}
-        <div ref={end} />
-      </div>
-      <JobStatus job={job} />
-      <div className="composer">
-        <textarea value={draft} placeholder={placeholder} aria-label="Message" autoFocus={autoFocus} onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(draft) } }} />
-        <button className="btn pri sm" disabled={!draft.trim() || !!job.busy} onClick={() => send(draft)}>Send</button>
-      </div>
-      {footer && <div className="composer-foot">{footer}<span>↵ send · ⇧↵ new line</span></div>}
-    </div>
-  )
-}
+export { ChatPane } from './Chat.tsx'
 
 export const openCount = (s: State) => list(s, 'question').filter(q => !q.answer && !q.dismissed).length
 

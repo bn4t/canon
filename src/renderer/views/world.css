@@ -1,0 +1,100 @@
+/* World: an in-page index, then one sheet (left) and its connections (right). */
+.w-shell { container: world / inline-size; display: flex; flex: 1; min-height: 0; align-items: stretch }
+.w-index { flex: 0 0 248px; position: sticky; top: var(--bar-h); align-self: flex-start; height: calc(100vh - var(--bar-h)); overflow-y: auto;
+  border-right: 1px solid var(--line); padding: 14px 10px; display: flex; flex-direction: column; gap: 2px }
+.w-filter { flex: 1; height: 32px; border: 1px solid var(--line2); border-radius: 8px; background: var(--panel); display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--muted); min-width: 0 }
+.w-filter:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft) }
+.w-filter input { border: 0; outline: none; background: transparent; flex: 1; min-width: 0; color: var(--ink) }
+.w-filter input::placeholder { color: var(--muted) }
+.w-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 4px }
+.w-tabs button { height: 24px; border: 0; border-radius: 6px; padding: 0 8px; background: transparent; font: 500 12px/1 var(--f-ui); color: var(--ink2) }
+.w-tabs button:hover { background: var(--hover) }
+.w-tabs button.on { background: var(--ink); color: var(--bg) }
+.w-tabs .n { opacity: .6; font-weight: 400 }
+.w-gh { font: 500 11.5px/1.3 var(--f-ui); color: var(--muted); padding: 10px 8px 4px }
+.w-it { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 8px; border-radius: 7px; text-decoration: none; color: var(--ink); border: 0; background: transparent; width: 100%; text-align: left; flex: none }
+.w-it:hover { background: var(--hover) }
+.w-it.on { background: var(--panel); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line) }
+.w-types { color: var(--muted); margin-top: 8px; height: 30px }
+.w-types:hover { color: var(--ink) }
+.w-none { padding: 10px 8px; font-size: 12.5px; color: var(--muted) }
+.w-av { width: 22px; height: 22px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font: 600 11px/1 var(--f-ui); color: #fff; flex: none }
+.w-av.big { width: 56px; height: 56px; border-radius: 14px; font: 400 26px/1 var(--f-prose) }
+
+.w-content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 30px 32px 56px }
+.w-draft, .w-idea { gap: 10px }
+.w-sheet { display: flex; gap: 28px; align-items: flex-start }
+.w-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px }
+.w-rail { flex: 0 0 312px; min-width: 0; display: flex; flex-direction: column; gap: 12px }
+.w-name { font: 400 36px/1.1 var(--f-prose); letter-spacing: -.01em; border: 0; background: transparent; outline: none; width: 100%; padding: 0; margin: 0; color: var(--ink) }
+.w-name::placeholder { color: var(--faint) }
+.w-lead { font: 400 18px/1.5 var(--f-prose); color: var(--ink) }
+textarea.w-lead { padding: 2px 6px; margin: 0 -6px; border-radius: 6px }
+.w-type-pill { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 9px; border-radius: 12px; background: var(--hover); border: 0; font: 500 12px/1 var(--f-ui); color: var(--ink) }
+.w-type-pill:hover { background: var(--press) }
+.w-type-pill .icon { color: var(--muted) }
+
+.w-fields { display: grid; grid-template-columns: 150px minmax(0, 1fr); border-top: 1px solid var(--line) }
+.w-fields > .k { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 13px }
+.w-fields > .v { padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 14px; min-width: 0 }
+.w-fields .v .inline { padding: 4px 6px; margin: 0 -6px; border-radius: 6px; line-height: 1.5; font-size: 14px; min-height: 0 }
+.w-fields .v .inline:hover { background: var(--hover) }
+.w-fields .v .inline:focus { background: var(--accent-tint) }
+.w-suggest { flex: none; margin-top: 1px }
+.w-opts { display: grid; gap: 6px; margin: 6px 0 4px; padding: 10px; border-radius: 10px; background: var(--accent-tint); border: 1px dashed color-mix(in srgb, var(--accent) 35%, transparent) }
+.w-opt { display: flex; gap: 10px; align-items: flex-start; text-align: left; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--line2); background: var(--panel); width: 100% }
+.w-opt:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line2)) }
+.w-opt.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft) }
+.w-opt .rad { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--faint); flex: none; margin-top: 3px }
+.w-opt.on .rad { border: 4.5px solid var(--accent) }
+.w-opt b { font-weight: 500; display: block }
+.w-opt b + span { display: block; color: var(--muted); font-size: 12.5px }
+
+.w-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; box-shadow: var(--shadow-sm) }
+.w-ch { display: flex; align-items: center; gap: 6px }
+.w-ch b { font-weight: 600; flex: 1 }
+.w-ch a { text-decoration: none } .w-ch a:hover { color: var(--ink) }
+.w-rr { display: flex; align-items: center; gap: 8px; font-size: 13px; min-width: 0 }
+.w-link { text-decoration: none; color: var(--ink); border-radius: 6px; margin: 0 -6px; padding: 2px 6px }
+.w-link:hover { background: var(--hover) }
+.w-link .mono { flex: none; min-width: 26px }
+.w-rel { align-items: flex-start }
+.w-rel .w-av { margin-top: 2px }
+.w-rel-name { text-decoration: none; font-weight: 500; flex: 0 1 auto; max-width: 42%; line-height: 24px }
+.w-rel-name:hover { color: var(--accent-ink) }
+.w-rel-how { flex: 1; min-width: 0; display: grid }
+.w-rel-how .inline { padding: 2px 6px; border-radius: 5px; line-height: 20px; color: var(--ink2) }
+.w-rel-how .inline:hover { background: var(--hover) }
+.w-rel-how .small { padding: 0 6px }
+.w-rel .lbl, .w-rel .x { line-height: 24px }
+.w-state { flex: none; height: 20px; padding: 0 7px; border-radius: 10px; font: 500 11.5px/20px var(--f-ui); white-space: nowrap }
+.w-dash { height: 26px; border: 1px dashed var(--line2); border-radius: 7px; background: transparent; color: var(--muted); font: 500 12.5px/1 var(--f-ui); padding: 0 9px; align-self: flex-start }
+.w-dash:hover { border-color: var(--faint); color: var(--ink) }
+.w-q { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-decoration: none; padding: 6px 6px; margin: 0 -6px; border-radius: 6px; font-size: 13px; color: var(--ink) }
+.w-q:hover { background: var(--hover) }
+.w-q-t { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden }
+.w-card .guide { padding-top: 8px }
+
+.w-over { display: flex; flex-direction: column; gap: 22px; max-width: 980px }
+.w-sec-h { font: 600 13.5px/1.3 var(--f-ui) }
+.w-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px }
+.w-tile { display: flex; gap: 12px; align-items: flex-start; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); text-decoration: none; box-shadow: var(--shadow-sm); min-width: 0; transition: border-color .12s, box-shadow .12s }
+.w-tile:hover { border-color: var(--line2); box-shadow: var(--shadow) }
+.w-tile .w-av { border-radius: 9px; font-size: 13px }
+.w-tile > .grow { display: grid; gap: 3px }
+.w-tile b { font: 500 16px/1.3 var(--f-prose) }
+.w-tile-sum { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--ink2); font-size: 12.5px; line-height: 1.45 }
+
+.w-types-view { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) }
+.w-type { gap: 10px }
+
+/* Narrower windows (the assistant panel open): connections move under the sheet; then the index goes. */
+@container world (max-width: 1060px) {
+  .w-sheet { flex-direction: column; align-items: stretch }
+  .w-rail { flex: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); align-items: start }
+}
+@container world (max-width: 720px) {
+  .w-index { display: none }
+  .w-content { padding: 24px 20px 48px }
+  .w-fields { grid-template-columns: minmax(0, 1fr) } .w-fields > .k { padding-bottom: 0; border-bottom: 0 }
+}

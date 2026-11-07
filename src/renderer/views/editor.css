@@ -1,0 +1,149 @@
+/* The scene editor: a page, its card, the text with highlights behind it, notes and suggestions in the margin. */
+.ed { display: flex; flex-direction: column; min-height: 100%; flex: 1 0 auto; min-width: 0 }
+.ed-body { flex: 1; display: flex; min-height: 0; align-items: stretch }
+.ed-page { flex: 1; min-width: 0; padding: 32px 24px 72px 48px; position: relative }
+.ed-body.folded .ed-page { padding: 26px 32px 72px 8px }
+.ed-doc { max-width: var(--paper); margin: 0 auto; display: flex; flex-direction: column; min-width: 0 }
+.ed-doc .doc-title { font: 400 40px/1.15 var(--f-prose); letter-spacing: -.01em; margin: 30px 0 18px }
+.ed-doc > .stack { margin-bottom: 12px }
+.ed-doc > .changes-box { margin-top: 10px }
+
+/* the scene card */
+.ed-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 18px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; min-width: 0 }
+.ed-card > .row { min-height: 26px }
+.ed-card .stack { margin-top: 8px }
+.ed-what { font: 400 15.5px/1.5 var(--f-prose); color: var(--ink); margin-top: 6px; white-space: pre-wrap; user-select: text }
+.ed-wants { font-size: 13px; color: var(--ink2); margin-top: 8px; user-select: text }
+.ed-wants .lbl { margin-right: 6px }
+.ed-nocard { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; font-size: 13px }
+.ed-must { display: grid; gap: 4px; margin-top: 8px }
+.ed-must-i { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink2) }
+.ed-must-i input { accent-color: var(--ok) }
+.ed-must-i.on > span:last-child { color: var(--muted) }
+.ed-must-l { min-width: 62px; flex: none }
+.ed-props { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line) }
+.chip.ed-chip { height: 26px; padding: 0 9px; border-radius: 7px; background: var(--panel); border: 1px solid var(--line2); font: 500 12.5px/1 var(--f-ui); color: var(--ink); gap: 6px }
+.chip.ed-chip:hover { border-color: color-mix(in srgb, var(--ink) 22%, var(--line2)) }
+.chip.ed-chip.dash { background: transparent; border: 1px dashed var(--line2); color: var(--muted); font-weight: 400 }
+.chip.ed-chip .k { color: var(--muted); font-weight: 400 }
+.chip.ed-chip .clip { max-width: 240px }
+.chip.ed-chip .status-pill { padding: 0 7px; height: 18px; line-height: 18px }
+.chip.ed-chip .icon { color: var(--muted) }
+.ed-pedit { width: 280px; padding: 6px; display: flex; flex-direction: column; gap: 6px }
+.ed-pedit .row { gap: 6px }
+.ed-pedit a { text-decoration: none }
+.ed-pick { max-height: 240px; overflow-y: auto; display: grid }
+.ed-pick-h { display: block; padding: 6px 10px 2px }
+.ed-cardrow { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; box-shadow: var(--shadow-sm) }
+.ed-cardrow:hover { border-color: var(--line2) }
+.ed-cardrow p { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font: 400 14.5px/1.4 var(--f-prose) }
+.ed-cardrow .icon { color: var(--muted) }
+
+/* the text, with an invisible copy behind it that carries the highlights */
+.ed-prose { position: relative; min-width: 0 }
+.ed-prose .prose-area { position: relative; z-index: 1; display: block; background: transparent }
+.ed-back { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; color: transparent;
+  font: var(--prose-size)/1.72 var(--f-prose); font-optical-sizing: auto; white-space: pre-wrap; overflow-wrap: break-word; word-wrap: break-word }
+.ed-back mark { color: transparent; background: none; border-radius: 2px; padding: 0 }
+.ed-back mark.bk-note { background: color-mix(in srgb, var(--accent) 9%, transparent); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--accent) 42%, transparent) }
+.ed-back mark.bk-note.you { background: color-mix(in srgb, var(--ink) 6%, transparent); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--ink) 22%, transparent) }
+.ed-back mark.bk-note.check { background: color-mix(in srgb, var(--warn) 12%, transparent); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--warn) 50%, transparent) }
+.ed-back mark.bk-note.hot { background: color-mix(in srgb, var(--accent) 20%, transparent) }
+.ed-back mark.bk-note.check.hot { background: color-mix(in srgb, var(--warn) 24%, transparent) }
+.ed-back mark.bk-sugg { background: var(--del-soft); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--del) 70%, transparent); text-decoration-thickness: 1.5px }
+.ed-back mark.bk-sugg.hot { box-shadow: 0 0 0 2px color-mix(in srgb, var(--del) 35%, transparent) }
+.ed-back mark.bk-sel { background: color-mix(in srgb, var(--accent) 24%, transparent) }
+.ed-back mark.bk-flash { animation: ed-flash 1.6s ease-out }
+@keyframes ed-flash { 0%, 40% { background: color-mix(in srgb, var(--accent) 30%, transparent) } 100% { background: transparent } }
+
+/* the selection toolbar */
+.ed-tb { position: absolute; z-index: 6; width: 452px; max-width: 100%; background: var(--panel); border: 1px solid var(--line2); border-radius: 12px; box-shadow: var(--shadow); font: 13.5px/1.5 var(--f-ui); animation: pop .12s ease-out }
+.ed-tb-top { display: flex; align-items: center; gap: 2px; padding: 6px; border-bottom: 1px solid var(--line) }
+.ed-tb-top > button:not(.x) { height: 28px; border: 0; background: transparent; border-radius: 6px; padding: 0 10px; font: 500 13px/1 var(--f-ui); color: var(--ink2); display: inline-flex; align-items: center; gap: 6px }
+.ed-tb-top > button:not(.x):hover { background: var(--hover) }
+.ed-tb-top > button.on { background: var(--accent-soft); color: var(--accent-ink) }
+.ed-tb-top .spark { color: inherit }
+.ed-tb-n { font-size: 12px; color: var(--muted); padding-right: 4px; white-space: nowrap }
+.ed-tb-in { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px }
+.ed-tb-field { display: flex; align-items: center; gap: 8px; min-height: 36px; border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line2)); border-radius: 8px; padding: 3px 4px 3px 10px; box-shadow: 0 0 0 3px var(--accent-soft) }
+.ed-tb-field input, .ed-tb-field textarea { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; resize: none; field-sizing: content; line-height: 1.45 }
+.ed-tb-field kbd { margin-left: 2px }
+.ed-tb-quick { display: flex; flex-wrap: wrap; gap: 6px }
+.ed-tb-quick button { height: 24px; border: 1px solid var(--line2); background: var(--bg); border-radius: 12px; padding: 0 9px; font: 12.5px/1 var(--f-ui); color: var(--ink2) }
+.ed-tb-quick button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-ink) }
+.ed-tb-cap { font-size: 12px; color: var(--muted) }
+
+/* suggestions */
+.ed-sbar-wrap { position: sticky; top: var(--bar-h); z-index: 4 }
+.ed-sbar { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 20px 0 24px; background: var(--accent-tint); border-bottom: 1px solid color-mix(in srgb, var(--accent) 16%, var(--line)); font-size: 13px; white-space: nowrap }
+.ed-sbar > b { font-weight: 600; color: var(--accent-ink) }
+.ed-sbar .muted { min-width: 0 }
+.ed-sbar-detail { padding: 10px 24px 12px; background: var(--accent-tint); border-bottom: 1px solid color-mix(in srgb, var(--accent) 16%, var(--line)) }
+.ed-card-s { background: var(--panel); border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line2)); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 13px }
+.ed-card-s.on { border-color: color-mix(in srgb, var(--accent) 45%, var(--line2)); box-shadow: 0 0 0 3px var(--accent-soft) }
+.ed-card-s.flat { background: transparent; border: 0; box-shadow: none; padding: 0; max-width: calc(var(--paper) + 120px) }
+.ed-card-s textarea.f { font: 14.5px/1.5 var(--f-prose) }
+.ed-diff { font: 14.5px/1.5 var(--f-prose); user-select: text; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto }
+.ed-diff del, .ed-hist-b del, .ed-hist-h del { color: var(--del); background: var(--del-soft); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--del) 60%, transparent) }
+.ed-diff ins, .ed-hist-b ins, .ed-hist-h ins { color: var(--ins); background: var(--ins-soft); text-decoration: none; border-bottom: 1.5px solid var(--ins) }
+
+/* the margin: notes and suggestion cards next to their passages */
+.ed-margin { flex: 0 0 300px; min-width: 0; padding: 30px 20px 48px 12px; border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; position: relative }
+.ed-mh { display: grid; gap: 8px }
+.ed-mh b { font-weight: 600 }
+.ed-addbtn { justify-self: start; margin-left: -8px }
+.ed-add { display: grid; gap: 6px }
+.ed-float-wrap { position: relative }
+.ed-float { position: relative }
+.ed-float-item { position: absolute; left: 0; right: 0; transition: top .15s ease-out }
+.ed-note { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; box-shadow: var(--shadow-sm) }
+.ed-note:hover { border-color: var(--line2) }
+.ed-note.ai { border-color: color-mix(in srgb, var(--accent) 18%, var(--line)) }
+.ed-note.check { border-color: color-mix(in srgb, var(--warn) 25%, var(--line)) }
+.ed-note.done { opacity: .7; box-shadow: none }
+.ed-who { display: flex; align-items: center; gap: 6px; font: 500 12px/1.3 var(--f-ui); min-width: 0 }
+.ed-who b { font-weight: 500; flex: none }
+.ed-who .lbl { font-weight: 400 }
+.ed-av { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font: 600 10px/1 var(--f-ui); color: #fff; flex: none; background: var(--muted) }
+.ed-av.ai { background: var(--accent) }
+.ed-av.check { background: var(--warn) }
+.ed-av .spark { color: #fff }
+.ed-q { font: italic 400 14px/1.45 var(--f-prose); color: var(--ink2); border: 0; border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); padding: 0 0 0 8px; background: none; text-align: left; user-select: text }
+button.ed-q:hover { color: var(--ink); border-left-color: var(--accent) }
+.ed-note.check .ed-q { border-left-color: color-mix(in srgb, var(--warn) 55%, transparent) }
+.ed-note.you .ed-q { border-left-color: var(--line2) }
+.ed-text { color: var(--ink); white-space: pre-wrap; user-select: text }
+.ed-why { color: var(--ink2); font-size: 12.5px }
+.ed-why .lbl { margin-right: 4px }
+.ed-act { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 2px }
+.ed-resolved { display: grid; gap: 8px; margin-top: 8px }
+.ed-resolved > .btn { justify-self: start; margin-left: -8px }
+
+/* folded margin: marks in a gutter while the assistant is open */
+.ed-gut { flex: 0 0 40px; position: relative }
+.ed-gm-pos { position: absolute; left: 12px }
+.ed-gm { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font: 600 11px/1 var(--f-ui); border: 1px solid transparent; padding: 0; background: var(--sunk); color: var(--ink2); margin-top: 4px }
+.ed-gm.ai { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 25%, transparent) }
+.ed-gm.check { background: var(--warn-soft); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent) }
+.ed-gm .spark { color: inherit }
+
+/* the footer */
+.ed-foot { position: sticky; bottom: 0; z-index: 4; flex: none; height: 44px; display: flex; align-items: center; gap: 16px; padding: 0 16px 0 48px; border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(10px) saturate(1.4); font-size: 12.5px; color: var(--muted); white-space: nowrap }
+.ed-mini { width: 72px; height: 4px; border-radius: 2px; background: var(--line2); overflow: hidden; flex: none; margin-left: -8px }
+.ed-mini i { display: block; height: 100%; background: var(--accent); border-radius: 2px }
+.ed-hint { display: inline-flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis }
+.ed-foot .bar-sep { margin: 0 -8px }
+@media (max-width: 1180px) { .ed-hint { display: none } .ed-hint + .bar-sep { display: none } }
+
+/* ⋯ menu and history */
+.ed-more-i .icon { margin-top: 2px; color: var(--muted) }
+.ed-more-i.danger, .ed-more-i.danger .t b { color: var(--bad) }
+.ed-more-i.danger .icon { color: var(--bad) }
+.palette.ed-hist { width: min(820px, calc(100vw - 32px)); max-height: 78vh; display: flex; flex-direction: column }
+.ed-hist-h { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); flex: none }
+.ed-hist-h b { font-weight: 600 }
+.ed-hist-b { padding: 14px 16px 18px; overflow-y: auto; display: grid; gap: 10px; align-content: start; grid-template-columns: minmax(0, 1fr) }
+.ed-hist-diff { font-size: 16px; max-height: 46vh; overflow-y: auto; padding: 12px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg) }
+.ed-ver { display: flex; align-items: center; gap: 8px; padding: 8px 8px; border-top: 1px solid var(--line); border-radius: 6px }
+.ed-ver.on { background: var(--accent-tint) }

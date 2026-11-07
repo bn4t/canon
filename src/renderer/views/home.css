@@ -1,0 +1,38 @@
+/* Home: the project overview */
+.bar-title-text { font-weight: 500 }
+.home { flex: 1; padding: 36px 48px 40px; max-width: 1080px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 18px }
+.home h1 { font: 400 36px/1.15 var(--f-prose); letter-spacing: -.01em }
+.home-log { font: 400 17px/1.45 var(--f-prose); color: var(--ink2); margin-top: 6px; max-width: 760px; user-select: text }
+.home-log-add { margin-top: 8px; font-size: 13px }
+.home-g2 { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px }
+@media (max-width: 1100px) { .home-g2 { grid-template-columns: minmax(0, 1fr) } .home { padding: 28px 28px 40px } }
+.home-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 10px; min-width: 0 }
+.home-card.flush { gap: 0 }
+.home-card.flush .home-ch { margin-bottom: 8px }
+.home-ch { display: flex; align-items: center; gap: 8px; min-height: 26px }
+.home-ch h2 { font: 600 13.5px/1.3 var(--f-ui) }
+.lbl.light { font-weight: 400 }
+.home-big-title { font: 400 24px/1.2 var(--f-prose) }
+.home-ex { font: 400 15px/1.6 var(--f-prose); color: var(--ink2); border-left: 2px solid var(--press); padding-left: 12px; margin: 2px 0; user-select: text }
+.home-num { font: 400 34px/1 var(--f-prose); font-variant-numeric: tabular-nums }
+.home-pb { height: 6px; border-radius: 3px; background: var(--sunk); position: relative; overflow: hidden }
+.home-pb i { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 3px }
+.home-spark { display: flex; align-items: flex-end; gap: 4px; height: 44px }
+.home-spark i { flex: 1; background: color-mix(in srgb, var(--accent) 26%, var(--panel)); border-radius: 2px 2px 0 0; min-height: 0 }
+.home-spark i.today { background: var(--accent) }
+.home-srow { display: grid; grid-template-columns: minmax(0, 1fr) 150px 92px; gap: 14px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); text-decoration: none; color: inherit; border-radius: 6px }
+.home-srow:hover .home-stitle { color: var(--accent-ink) }
+.home-stitle { font: 500 16px/1.3 var(--f-prose) }
+.home-seg { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--sunk); gap: 2px }
+.home-w { text-align: right; font-size: 12.5px; color: var(--ink2); font-variant-numeric: tabular-nums }
+.home-need { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border: 0; border-top: 1px solid var(--line); background: transparent; text-decoration: none; color: inherit; text-align: left; width: 100%; font: inherit }
+.home-need:hover .home-need-t, .home-need:hover b { color: var(--accent-ink) }
+.home-need .tag { margin-top: 1px }
+.home-need-t { display: block; margin-top: 3px }
+.home-ic { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex: none; background: var(--sunk); color: var(--ink2) }
+.home-ic.contradiction { background: var(--bad-soft); color: var(--bad) } .home-ic.hole { background: var(--warn-soft); color: var(--warn) } .home-ic.question { background: var(--accent-soft); color: var(--accent-ink) }
+.home-ic.ai { background: var(--accent-soft); color: var(--accent) }
+.home-rec { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink2); padding: 6px 0; border-top: 1px solid var(--line); min-height: 38px }
+.home-rec a { text-decoration: none } .home-rec a:hover b { color: var(--accent-ink) }
+.home-rec b { font-weight: 500; color: var(--ink) }
+.home-undo-gap { width: 52px; flex: none }

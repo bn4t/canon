@@ -1,8 +1,8 @@
 import { createPortal } from 'react-dom'
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { useCanon, undoRedo, applyProposal, isApplied, tx, showToast, type Proposal, type State } from './store.ts'
-import { describe } from './prompts.ts'
+import { useCanon, undoRedo, applyProposal, isApplied, tx, showToast, nameOf, typeDef, type Proposal, type State } from './store.ts'
 import { diffWords, type Part } from './diff.ts'
+import { useAI, aiReady, anyConnected, modelFor, type Job } from './ai.ts'
 
 export const go = (h: string) => { location.hash = h }
 /** Fix up the URL without a history entry; the app still hears about it. */
@@ -43,37 +43,193 @@ export function JobStatus({ job }: { job: ReturnType<typeof useJob> }) {
   )
 }
 
-/** Proposal cards: the AI suggests, the author applies. */
-export function Proposals({ s, items, onChange, label = 'Suggestions' }: { s: State; items: Proposal[]; onChange: (items: Proposal[]) => void; label?: string }) {
+// ---------------- proposed changes: the one way canon changes from the assistant are reviewed ----------------
+
+const FIELD_LABEL: Record<string, string> = { summary: 'Summary', name: 'Name', text: 'Text', detail: 'Detail', answer: 'Answer', title: 'Title', card: 'Scene card', wants: 'Wants', mustLand: 'Must land', premise: 'Premise', logline: 'Logline', thesis: 'Thesis', notes: 'Notes' }
+const asText = (v: unknown): string => typeof v === 'string' ? v : Array.isArray(v) ? v.map(asText).join(' · ')
+  : v && typeof v === 'object' && 'state' in v ? [(v as { state: string }).state, (v as { note?: string }).note].filter(Boolean).join(': ') : v === undefined || v === null ? '' : JSON.stringify(v)
+const at = (o: unknown, path: string) => path.split('.').reduce<unknown>((x, k) => (x as Record<string, unknown> | undefined)?.[k], o)
+
+/** What a proposal changes, one row per field: where, what it says now, what it would say. */
+export function changeRows(s: State, p: Proposal): { where: string; before?: string; after: string }[] {
+  if (p.op === 'edit') return [{ where: `${nameOf(s, p.id) || 'Scene'} › Text`, before: p.find, after: p.replace || '' }]
+  if (p.op === 'create') {
+    const d = (p.data || {}) as Record<string, unknown>
+    const what = p.kind === 'fact' ? (d.at !== undefined ? 'event' : 'fact') : p.kind === 'entity' ? typeDef(s, String(d.type)).one.toLowerCase() : p.kind
+    const name = asText(d.name || d.title || d.text)
+    const body = asText(d.summary || d.card || d.detail || (p.kind === 'guide' ? d.text : ''))
+    return [{ where: `New ${what}`, after: [name, body].filter(Boolean).join(': ') }]
+  }
+  const rec = p.id ? s.recs[p.id] : undefined
+  return Object.entries(p.set || {}).map(([k, v]) => {
+    const [head, key] = k.split('.')
+    let label = FIELD_LABEL[k] || k
+    if (head === 'fields' && rec?.kind === 'entity') label = typeDef(s, rec.type).fields.find(f => f.key === key)?.label || key
+    else if (head === 'knows') label = `What ${nameOf(s, key) || 'someone'} knows`
+    else if (head === 'meta') label = key
+    return { where: `${nameOf(s, p.id) || 'Record'} › ${label}`, before: rec ? asText(at(rec, k)) : undefined, after: asText(v) }
+  })
+}
+
+/** Canon changes from the assistant: tick what you want, then apply. Nothing changes before that. */
+export function ProposedChanges({ s, items, onChange, title = 'Proposed changes', applyLabel, onApplied, note }: {
+  s: State; items: Proposal[]; onChange: (items: Proposal[]) => void; title?: string; applyLabel?: (n: number) => string; onApplied?: (ps: Proposal[]) => void; note?: ReactNode
+}) {
+  const [off, setOff] = useState<Set<Proposal>>(new Set())
   if (!items.length) return null
-  const applied = (p: Proposal) => isApplied(s, p)
-  const open = items.filter(p => !applied(p))
-  const apply = (ps: Proposal[]) => tx(ps.length > 1 ? `Apply ${ps.length} suggestions` : 'Apply suggestion', () => ps.forEach(applyProposal))
+  const open = items.filter(p => !isApplied(s, p))
+  const picked = open.filter(p => !off.has(p))
+  const apply = () => {
+    tx(picked.length === 1 ? 'Apply a change' : `Apply ${picked.length} changes`, () => picked.forEach(applyProposal))
+    onApplied?.(picked)
+    if (picked.length === open.length) onChange(items.filter(p => isApplied(s, p) || picked.includes(p)))
+  }
+  const flip = (p: Proposal) => setOff(o => { const n = new Set(o); if (n.has(p)) n.delete(p); else n.add(p); return n })
   return (
-    <div className="proposals">
-      <div className="row"><span className="lbl aic">✦ {label}</span><span className="grow" />
-        {open.length > 1 && <button className="btn sm" onClick={() => apply(open)}>Apply all {open.length}</button>}
-        <button className="btn sm ghost" onClick={() => onChange([])}>Clear</button></div>
+    <div className="changes-box" role="group" aria-label={title}>
+      <div className="changes-h"><span className="spark-ic"><Spark size={12} /></span><b>{title}</b><span className="lbl">{open.length ? `${picked.length} of ${open.length} selected` : 'All applied'}</span></div>
       {items.map((p, i) => {
-        const d = describe(s, p)
+        const done = isApplied(s, p)
         return (
-          <div key={i} className={'proposal' + (applied(p) ? ' done' : '')}>
-            <div className="stack" style={{ gap: 4 }}>
-              <b>{d.title}</b>
-              {p.op === 'edit' ? <p className="review" style={{ fontSize: 14 }}><Diff parts={diffWords(p.find || '', p.replace || '')} /></p> : d.body && <p className="pre">{d.body}</p>}
-              {p.why && <p className="muted small">{p.why}</p>}
-            </div>
-            {applied(p) ? <span className="chip k">Applied</span> : (
-              <div className="row nowrap">
-                <button className="btn sm pri" onClick={() => apply([p])}>Apply</button>
-                <button className="btn sm ghost" aria-label="Dismiss" onClick={() => onChange(items.filter(x => x !== p))}>×</button>
-              </div>
-            )}
-          </div>
+          <label key={i} className={'change-row' + (done ? ' done' : '')}>
+            {done ? <span className="change-done"><Icon name="check" size={12} /></span>
+              : <input type="checkbox" checked={!off.has(p)} onChange={() => flip(p)} aria-label="Include this change" />}
+            <span className="change-body">
+              {changeRows(s, p).map((r, j) => (
+                <span key={j} className="change-one">
+                  <span className="lbl">{r.where}</span>
+                  <span className="change-text">{r.before !== undefined && r.before.trim() ? <Diff parts={diffWords(r.before, r.after)} /> : <ins>{r.after}</ins>}</span>
+                </span>
+              ))}
+              {p.why && <span className="small muted">{p.why}</span>}
+            </span>
+            {done && <span className="chip ok">Applied</span>}
+          </label>
         )
       })}
+      {note && <div className="change-note">{note}</div>}
+      {open.length > 0 && <div className="changes-foot">
+        <button className="btn sm pri" disabled={!picked.length} onClick={apply}>{applyLabel ? applyLabel(picked.length) : picked.length === 1 ? 'Apply 1 change' : `Apply ${picked.length} changes`}</button>
+        <button className="btn sm ghost" onClick={() => onChange(items.filter(p => isApplied(s, p)))}>Discard</button>
+      </div>}
     </div>
   )
+}
+/** @deprecated The old name; the same component. */
+export const Proposals = ({ s, items, onChange, label }: { s: State; items: Proposal[]; onChange: (items: Proposal[]) => void; label?: string }) =>
+  <ProposedChanges s={s} items={items} onChange={onChange} title={label && label !== 'Suggestions' ? label : 'Proposed changes'} />
+
+// ---------------- the Assist menu: the same place and verbs on every screen ----------------
+
+export interface AssistItem {
+  label: string
+  /** One line under the label: what it works on. */
+  hint?: string
+  /** Where its result lands: "Suggestions", "Margin", "Questions", "Board", "Fields"… */
+  dest?: string
+  run: () => void
+  disabled?: boolean
+  /** Works without an assistant (default: needs one). */
+  local?: boolean
+}
+export function AssistMenu({ items, label = 'Assist', busy, className = 'right', disabled, title, footer }: {
+  items: (AssistItem | 'sep')[]; label?: string; busy?: string; className?: string; disabled?: boolean
+  /** A line above the items ("Assist with The Ledger · Results go to"); a line below them. */
+  title?: ReactNode; footer?: ReactNode
+}) {
+  const st = useAI()
+  const ready = aiReady(st)
+  return (
+    <Popover className={className} trigger={open => (
+      <button className="btn sm soft assist-btn" disabled={disabled} aria-haspopup="menu" onClick={open}>
+        {busy ? <span className="spinner" /> : <Spark size={13} />}{busy ? 'Working…' : label}<Icon name="down" size={12} />
+      </button>
+    )}>
+      {close => (
+        <div className="assist-menu" role="menu" aria-label={label}>
+          {title && <div className="assist-menu-h">{title}</div>}
+          {!ready && <ConnectPrompt compact onGo={close} />}
+          {items.map((it, i) => it === 'sep' ? <div key={i} className="menu-sep" /> : (
+            <button key={i} role="menuitem" className="assist-item" disabled={it.disabled || !!busy || (!ready && !it.local)} onClick={() => { close(); it.run() }}>
+              <Spark size={14} />
+              <span className="t"><b>{it.label}</b>{it.hint && <span>{it.hint}</span>}</span>
+              {it.dest && <span className="dest">{it.dest}</span>}
+            </button>
+          ))}
+          {footer !== undefined ? footer && <div className="assist-menu-f">{footer}</div>
+            : <div className="assist-menu-f"><span className="grow">Nothing changes until you review it</span><ModelLink onGo={close} /></div>}
+        </div>
+      )}
+    </Popover>
+  )
+}
+
+/** The model a job uses, as a link to Settings › Assistant. */
+export function ModelLink({ job = 'assist', onGo }: { job?: Job; onGo?: () => void }) {
+  const st = useAI()
+  const m = modelFor(job, st)
+  return <button className="model-link" title="Change it in Settings › Assistant" onClick={() => { onGo?.(); openSettings('assistant') }}>{m.model || 'No model'}</button>
+}
+
+/** Shown wherever the assistant would act while none is connected. */
+export function ConnectPrompt({ compact, onGo, what }: { compact?: boolean; onGo?: () => void; what?: string }) {
+  const st = useAI()
+  const connected = anyConnected(st)
+  const go = () => { onGo?.(); openSettings('assistant') }
+  return (
+    <div className={'connect' + (compact ? ' compact' : '')}>
+      <span className="spark-ic"><Spark size={12} /></span>
+      <span className="grow">{connected ? 'Choose a model to use the assistant.' : `No assistant connected${what ? `: connect one to ${what}` : ''}.`}</span>
+      <button className="btn sm" onClick={go}>{connected ? 'Choose a model' : 'Connect'}</button>
+    </div>
+  )
+}
+
+export const Spark = ({ size = 14 }: { size?: number }) =>
+  <svg className="icon spark" width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.5l1.4 4.1L13.5 7 9.4 8.4 8 12.5 6.6 8.4 2.5 7l4.1-1.4Z" /></svg>
+
+// ---------------- the assistant panel, from anywhere ----------------
+
+/** Open the assistant panel and send it a question. */
+export const askAssistant = (q: string) => dispatchEvent(new CustomEvent('canon:ask', { detail: q }))
+/** Open the assistant panel on an interview with a character (an entity id). */
+export const startInterview = (entityId: string) => dispatchEvent(new CustomEvent('canon:interview', { detail: entityId }))
+
+// ---------------- the Settings window ----------------
+
+export type SettingsSection = 'details' | 'goals' | 'guides' | 'labels' | 'types' | 'assistant' | 'export' | 'appearance'
+let settingsOpen: SettingsSection | null = null
+const settingsSubs = new Set<() => void>()
+export function openSettings(section: SettingsSection = 'details') { settingsOpen = section; settingsSubs.forEach(f => f()) }
+export function closeSettings() { settingsOpen = null; settingsSubs.forEach(f => f()) }
+export const useSettingsSection = () => useSyncExternalStore(f => (settingsSubs.add(f), () => settingsSubs.delete(f)), () => settingsOpen)
+
+// ---------------- appearance (per machine) ----------------
+
+export interface Appearance { theme: 'system' | 'light' | 'dark'; prose: 'small' | 'medium' | 'large'; width: 'narrow' | 'medium' | 'wide' }
+const PROSE = { small: '17px', medium: '19px', large: '21px' }, WIDTH = { narrow: '600px', medium: '680px', wide: '780px' }
+export const getAppearance = (): Appearance => ({ theme: stored('canon.theme', 'system') as Appearance['theme'], prose: stored('canon.prose', 'medium') as Appearance['prose'], width: stored('canon.width', 'medium') as Appearance['width'] })
+export function applyAppearance(p: Partial<Appearance> = {}) {
+  const a = { ...getAppearance(), ...p }
+  store('canon.theme', a.theme); store('canon.prose', a.prose); store('canon.width', a.width)
+  const root = document.documentElement
+  if (a.theme === 'system') delete root.dataset.theme; else root.dataset.theme = a.theme
+  root.style.setProperty('--prose-size', PROSE[a.prose] || PROSE.medium)
+  root.style.setProperty('--paper', WIDTH[a.width] || WIDTH.medium)
+  return a
+}
+
+/** "2 hours ago", "yesterday", "3 Nov". */
+export function ago(t: number | string) {
+  const ms = Date.now() - new Date(t).getTime(), m = Math.round(ms / 60000)
+  if (m < 1) return 'just now'
+  if (m < 60) return `${m} min ago`
+  const h = Math.round(m / 60)
+  if (h < 24) return `${h} h ago`
+  const d = Math.round(h / 24)
+  if (d === 1) return 'yesterday'
+  if (d < 7) return `${d} days ago`
+  return new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 }
 
 export function Toast() {
@@ -159,7 +315,7 @@ export function Bar({ children, className = '' }: { children?: ReactNode; classN
     <header className={'pagehead ' + className}>
       {!c.sidebar && <button className="icon-btn" title={`Show sidebar (${MOD}\\)`} aria-label="Show sidebar" onClick={() => setChrome({ sidebar: true })}><Icon name="sidebar" /></button>}
       {children}
-      <button className={'icon-btn assist-toggle' + (c.assistant ? ' on' : '')} title={`Assistant (${MOD}J)`} aria-label="Assistant" aria-pressed={c.assistant} onClick={() => setChrome(x => ({ assistant: !x.assistant }))}><Icon name="director" /><span>Assistant</span></button>
+      <button className={'btn sm ghost assist-toggle' + (c.assistant ? ' on' : '')} title={`Assistant (${MOD}J)`} aria-label="Assistant" aria-pressed={c.assistant} onClick={() => setChrome(x => ({ assistant: !x.assistant }))}><Spark size={14} /><span>Assistant</span><kbd>{MOD}J</kbd></button>
     </header>
   )
 }
@@ -206,6 +362,19 @@ const ICONS: Record<string, string> = {
   collection: 'M4 7h16M7 4h10M5 10h14v10H5z',
   replace: 'M4 6h10M4 11h7M4 16h5M14 13l3-3 3 3M17 10v10',
   person: 'M12 4a4 4 0 1 0 0 8a4 4 0 1 0 0-8M4.5 20c1-3.6 4-5.5 7.5-5.5s6.5 1.9 7.5 5.5',
+  home: 'M4 10.8L12 4l8 6.8V19.3a.7.7 0 0 1-.7.7H14.5v-5.2h-5V20H4.7a.7.7 0 0 1-.7-.7z',
+  lock: 'M7.5 10.5V8a4.5 4.5 0 0 1 9 0v2.5M5.5 10.5h13v9.5h-13z',
+  unlock: 'M7.5 10.5V8a4.5 4.5 0 0 1 8.7-1.6M5.5 10.5h13v9.5h-13z',
+  comment: 'M4 5h16v11H10l-4.5 3.5V16H4z',
+  list: 'M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01',
+  card: 'M4.5 4h15v16h-15zM8 9h8M8 13h5',
+  sliders: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
+  trash: 'M5 7h14M10 4h4M7 7l1 13h8l1-13',
+  split: 'M4 12h16M12 4v5M12 15v5',
+  merge: 'M7 4v5l5 4 5-4V4M12 13v7',
+  copy: 'M8 8h11v12H8zM5 16V4h11',
+  eye: 'M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12zM12 9.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5',
+  drag: 'M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01',
 }
 export const Icon = ({ name, size = 16 }: { name: keyof typeof ICONS | string; size?: number }) =>
-  <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={name === 'more' ? 3 : 1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={ICONS[name]} /></svg>
+  <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={name === 'more' || name === 'drag' ? 3 : 1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={ICONS[name]} /></svg>

@@ -22,28 +22,34 @@ page.on('pageerror', e => errors.push(e.message))
 await page.waitForSelector('.side')
 const prose = () => page.locator('.prose-area').inputValue()
 const title = () => page.locator('.doc-title').inputValue()
+const menu = cmd => app.evaluate(({ BrowserWindow }, c) => BrowserWindow.getAllWindows()[0].webContents.executeJavaScript(`dispatchEvent(new CustomEvent('canon:menu', { detail: ${JSON.stringify(c)} }))`), cmd)
+const blur = () => page.evaluate(() => document.activeElement?.blur())
 
-await step('opens the first scene of the sample project', async () => {
-  assert.equal(await title(), 'The office at night')
+await step('opens Home of the sample project', async () => {
+  await page.waitForSelector('.home h1')
+  assert.equal(await page.locator('.home h1').innerText(), 'Low Tide at Merrow')
   assert.match(await page.locator('.side-project b').innerText(), /Low Tide at Merrow/)
+  assert.match(await page.locator('.home').innerText(), /Needs you/)
 })
 
 await step('the palette shortcut toggles it once', async () => {
-  await page.locator('.doc-foot').click()
+  await blur()
   await page.keyboard.press(`${mod}+k`)
   await page.waitForSelector('.palette')
   await page.keyboard.type('Delphine')
   await page.keyboard.press('Enter')
   await page.waitForFunction(() => location.hash.startsWith('#world/'))
-  assert.equal(await page.locator('.sheet .doc-title').inputValue(), 'Delphine Calder')
+  await page.waitForFunction(() => [...document.querySelectorAll('input, textarea')].some(x => x.value === 'Delphine Calder'))
   assert.equal(await page.locator('.palette').count(), 0)
 })
 
-await step('menu commands navigate', async () => {
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.executeJavaScript(`dispatchEvent(new CustomEvent('canon:menu', { detail: 'go:timeline' }))`))
+await step('menu commands navigate, and old links still land', async () => {
+  await menu('go:timeline')
   await page.waitForFunction(() => location.hash === '#timeline')
   await page.evaluate(() => { location.hash = 'write/st_ledger/sc1' })
+  await page.waitForFunction(() => location.hash === '#scene/sc1')
   await page.waitForSelector('.prose-area')
+  assert.equal(await title(), 'The office at night')
 })
 
 await step('typing undo is native; canon undo is one step', async () => {
@@ -56,7 +62,7 @@ await step('typing undo is native; canon undo is one step', async () => {
   assert.equal(await title(), before, 'native undo inside the field')
   await page.keyboard.type(' later')
   await page.waitForTimeout(800) // the save queue flushes
-  await page.locator('.doc-foot').click() // leave the field
+  await blur() // leave the field
   await page.keyboard.press(`${mod}+z`)
   await page.waitForFunction(t => document.querySelector('.doc-title').value === t, before, { timeout: 4000 })
   await page.keyboard.press(`${mod}+Shift+z`)
@@ -64,27 +70,39 @@ await step('typing undo is native; canon undo is one step', async () => {
 })
 
 await step('new scene from the menu, and it persists across a restart', async () => {
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.executeJavaScript(`dispatchEvent(new CustomEvent('canon:menu', { detail: 'new-scene' }))`))
+  await menu('new-scene')
   await page.waitForFunction(() => document.querySelector('.doc-title')?.value === 'New scene')
   await page.locator('.prose-area').click()
   await page.keyboard.type('The water turned.')
   await app.close() // closes the window: the shell waits for the renderer to flush
   app = await launch()
   page = await app.firstWindow()
+  page.on('pageerror', e => errors.push(e.message))
   await page.waitForSelector('.side')
-  await page.evaluate(() => { location.hash = 'write/st_ledger' })
-  const n = await page.locator('.tree-scene:not(.add)').count()
-  assert.equal(n, 6)
+  await page.evaluate(() => { location.hash = 'story/st_ledger' })
+  await page.waitForFunction(() => document.querySelectorAll('.tree-scene:not(.add)').length === 6)
   await page.locator('.tree-scene:not(.add)').nth(5).click()
   await page.waitForFunction(() => document.querySelector('.doc-title')?.value === 'New scene')
   assert.equal(await prose(), 'The water turned.')
+})
+
+await step('every settings section opens', async () => {
+  await menu('settings')
+  await page.waitForSelector('.settings-win')
+  for (const name of ['Details and background', 'Goals', 'Guides', 'Labels and scene fields', 'Types and fields', 'Assistant', 'Export and backup', 'Appearance']) {
+    await page.locator('.settings-ni', { hasText: name }).click()
+    await page.waitForFunction(n => document.querySelector('.settings-head h2')?.textContent === n, name)
+  }
+  await page.keyboard.press('Escape')
+  await page.waitForFunction(() => !document.querySelector('.settings-win'))
 })
 
 await step('exports go through the save dialog (EPUB and PDF)', async () => {
   for (const [fmt, file] of [['EPUB', 'out.epub'], ['PDF', 'out.pdf']]) {
     const target = join(dir, file)
     await app.evaluate(({ dialog }, p) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: p }) }, target)
-    await page.evaluate(() => { location.hash = 'project/export' })
+    await menu('settings:export')
+    await page.waitForSelector('.settings-win')
     await page.getByRole('button', { name: fmt, exact: true }).click()
     await page.getByRole('button', { name: 'Export…' }).click()
     await page.waitForSelector('.toast', { timeout: 15000 })
@@ -94,6 +112,16 @@ await step('exports go through the save dialog (EPUB and PDF)', async () => {
     else assert.equal(readFileSync(target).subarray(30, 38).toString(), 'mimetype')
     await page.locator('.toast .x').click()
   }
+  await page.keyboard.press('Escape')
+})
+
+await step('the first run opens the sample project', async () => {
+  await page.evaluate(() => fetch('/api/records', { method: 'POST', body: JSON.stringify({ group: 'x', baseline: true, changes: [{ id: 'project', kind: 'project', data: null }] }) }))
+  await page.evaluate(() => location.reload())
+  await page.waitForSelector('.setup-card')
+  await page.getByRole('button', { name: /Open the sample project/ }).click()
+  await page.waitForSelector('.home h1')
+  assert.equal(await page.locator('.home h1').innerText(), 'Low Tide at Merrow')
 })
 
 await step('no page errors', async () => { assert.deepEqual(errors, []) })
