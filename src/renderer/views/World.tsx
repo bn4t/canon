@@ -8,6 +8,8 @@ import { f, slug } from '../schema.ts'
 import { completeJSON, useAI, aiReady } from '../ai.ts'
 import { fillGaps, draftEntity, findProblems, normalizeProposal, type FoundQ } from '../prompts.ts'
 import { useJob, JobStatus, Popover, go, Bar, Icon, AssistMenu, ProposedChanges, ConnectPrompt, Spark, startInterview, askAssistant, openSettings, type AssistItem } from '../ui.tsx'
+import { ResearchCard, Picture } from './Research.tsx'
+import { PinButton } from './Pinned.tsx'
 import { History, GuideRow, RecordPicker, hrefOf, factCode, avatarColor } from './shared.tsx'
 
 // ---------------- small pieces ----------------
@@ -211,6 +213,7 @@ function Sheet({ s, e, layout }: { s: State; e: Entity; layout: (bar: ReactNode,
   const bar = (
     <Bar>
       <div className="crumbs grow"><a href="#world">World</a><Icon name="chevron" size={12} /><span className="clip">{def.label}</span><Icon name="chevron" size={12} /><b className="clip">{e.name || 'Unnamed'}</b></div>
+      <PinButton s={s} id={e.id} />
       {person && <button className="btn sm" onClick={() => startInterview(e.id)}>Interview {first}</button>}
       <AssistMenu items={items} busy={job.busy} />
       <Popover className="right" trigger={o => <button className="icon-btn" aria-label="More" title="More" onClick={o}><Icon name="more" /></button>}>{close => <>
@@ -248,7 +251,7 @@ function Sheet({ s, e, layout }: { s: State; e: Entity; layout: (bar: ReactNode,
     <div className="w-sheet">
       <div className="w-main">
         <div className="row nowrap" style={{ alignItems: 'flex-start', gap: 16 }}>
-          <Av name={e.name} big />
+          <Picture s={s} about={e.id} fallback={<Av name={e.name} big />} />
           <div className="stack grow" style={{ gap: 6 }}>
             <input className="w-name" value={e.name} aria-label="Name" placeholder="Name" autoFocus={/^New /.test(e.name)} onFocus={ev => { if (/^New /.test(e.name)) ev.target.select() }} onChange={ev => edit(x => { x.name = ev.target.value })} />
             <div className="row small muted" style={{ gap: 8, fontSize: 13 }}>
@@ -284,6 +287,7 @@ function Sheet({ s, e, layout }: { s: State; e: Entity; layout: (bar: ReactNode,
           {scenes.map(sc => <a key={sc.id} className="w-rr w-link" href={'#' + hrefOf(s, sc.id)}><span className="mono muted">{shortRef(s, sc.id)}</span><span className="clip">{sc.title || 'Untitled scene'}</span></a>)}
           {!scenes.length && <span className="small muted">No scene lists {first} in its cast yet. Add {person ? 'them' : 'it'} from a scene card.</span>}
         </section>
+        <ResearchCard s={s} about={e.id} />
         <Voice s={s} e={e} person={person} />
         <section className="w-card">
           <div className="w-ch"><b>Questions</b><span className="lbl">{questionsAbout(s, e.id).filter(q => !q.answer && !q.dismissed).length} open</span></div>

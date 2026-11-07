@@ -13,14 +13,14 @@ const routes = process.argv.slice(2).length ? process.argv.slice(2) : [
   'home', 'scene/sc1', 'scene/sc2', 'story/st_ledger', 'world', 'world/ent_ines', 'timeline/ev2', 'knowledge/fact_d', 'questions', 'questions/q1',
   'settings:assistant', 'settings:goals', 'settings:types', 'assistant', 'scene/sc1', 'assistant', 'welcome',
 ]
-const out = '.screens'
+const out = process.env.SCREENS_DIR || '.screens'
 mkdirSync(out, { recursive: true })
 const dir = mkdtempSync(join(tmpdir(), 'canon-screens-'))
 seed(dir)
 writeFileSync(join(dir, 'settings.json'), JSON.stringify({ default: { provider: 'chatgpt', model: 'gpt-5.5', effort: 'medium' }, jobs: { assist: { provider: 'openrouter', model: 'anthropic/claude-sonnet-5.5' } } }))
 writeFileSync(join(dir, 'window.json'), JSON.stringify({ width: Number(process.env.W || 1440), height: Number(process.env.H || 900) }))
 
-const app = await _electron.launch({ executablePath: createRequire(import.meta.url)('electron'), args: ['.', '--no-sandbox'], env: { ...process.env, CANON_DATA_DIR: dir, NODE_OPTIONS: '' } })
+const app = await _electron.launch({ executablePath: createRequire(import.meta.url)('electron'), args: [process.env.CANON_APP || '.', '--no-sandbox'], env: { ...process.env, CANON_DATA_DIR: dir, NODE_OPTIONS: '' } })
 const page = await app.firstWindow()
 page.on('console', m => { if (m.type() === 'error') console.log('console:', m.text()) })
 page.on('pageerror', e => console.log('pageerror:', e.message))
@@ -31,6 +31,22 @@ for (const scheme of (process.env.SCHEMES || 'light,dark').split(',')) {
   for (const r of routes) {
     if (r === 'assistant') { panel = !panel; await page.evaluate(() => dispatchEvent(new CustomEvent('canon:menu', { detail: 'assistant' }))); continue }
     if (r === 'sidebar') { await page.evaluate(() => dispatchEvent(new CustomEvent('canon:menu', { detail: 'sidebar' }))); continue }
+    // "do:<cmd>" sends a menu command and moves on (e.g. do:reference keeps the pane open for the next shots);
+    // "menu:<cmd>" sends it, shoots the dialog it opens, then dismisses it with Escape.
+    if (r.startsWith('do:') || r.startsWith('menu:')) {
+      const cmd = r.slice(r.indexOf(':') + 1)
+      await page.evaluate(c => dispatchEvent(new CustomEvent('canon:menu', { detail: c })), cmd)
+      await page.waitForTimeout(450)
+      if (r.startsWith('do:')) continue
+      const name = `menu-${cmd.replace(/[:/]/g, '_')}-${scheme}.png`
+      await page.screenshot({ path: join(out, name) })
+      console.log(name)
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(200)
+      continue
+    }
+    // "click:<css>" clicks the first match (opening a picker item, a tab, a menu) and moves on.
+    if (r.startsWith('click:')) { await page.locator(r.slice(6)).first().click(); await page.waitForTimeout(350); continue }
     if (r === 'palette') { await page.keyboard.press('Control+k'); await page.keyboard.type('led'); await page.waitForTimeout(250); await page.screenshot({ path: join(out, `palette-${scheme}.png`) }); await page.keyboard.press('Escape'); continue }
     if (r.startsWith('settings:')) {
       await page.evaluate(c => dispatchEvent(new CustomEvent('canon:menu', { detail: c })), r)
@@ -56,6 +72,7 @@ for (const scheme of (process.env.SCHEMES || 'light,dark').split(',')) {
   }
 }
 // Electron's close can hang after the window goes; don't let that keep the run alive
+const proc = app.process() // asked for before closing: Playwright forgets it once the app has gone
 await Promise.race([app.close(), new Promise(r => setTimeout(r, 3000))])
-app.process().kill()
+proc.kill()
 process.exit(0)

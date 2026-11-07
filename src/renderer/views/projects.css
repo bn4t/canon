@@ -1,0 +1,39 @@
+/* Projects: the switcher, new project and duplicate dialogs, template cards, backups */
+.pj-overlay { place-items: center; padding: 24px 16px }
+.palette.pj { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 48px); grid-template-rows: auto minmax(0, 1fr) auto; border-radius: 16px }
+.palette.pj.wide { width: min(760px, calc(100vw - 32px)) }
+.pj-h { display: flex; gap: 12px; align-items: flex-start; padding: 22px 22px 10px }
+.pj-h h2 { font: 400 24px/1.2 var(--f-prose) }
+.pj-h p { margin-top: 4px }
+.pj-b { min-height: 0; overflow-y: auto; padding: 6px 22px 20px; display: grid; gap: 14px; align-content: start }
+.pj-f { display: flex; align-items: center; gap: 8px; padding: 12px 22px; border-top: 1px solid var(--line); background: var(--sunk) }
+.pj-name { font: 400 19px/1.3 var(--f-prose); padding: 9px 12px }
+
+.pj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px }
+.pj-card { position: relative; display: grid; border: 1px solid var(--line2); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow-sm); transition: border-color .12s, box-shadow .12s; min-width: 0 }
+.pj-card:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line2)); box-shadow: var(--shadow) }
+.pj-card.cur { background: var(--accent-tint); border-color: color-mix(in srgb, var(--accent) 30%, var(--line2)) }
+.pj-open { display: flex; flex-direction: column; align-items: stretch; gap: 4px; text-align: left; padding: 14px 40px 14px 14px; border: 0; background: transparent; border-radius: 12px; min-width: 0; color: inherit }
+.pj-open:disabled { cursor: default; opacity: 1 }
+.pj-title { font: 500 17px/1.25 var(--f-prose); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical }
+.pj-meta { font-size: 12px; color: var(--muted) }
+.pj-when { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--faint); margin-top: auto; padding-top: 6px }
+.pj-more { position: absolute; top: 10px; right: 10px }
+.pj-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--bad-soft); border-radius: 0 0 12px 12px }
+
+.pj-menu-h { padding: 6px 10px 4px; font: 500 11.5px/1.3 var(--f-ui); color: var(--muted) }
+.pj-menu-ago { font-size: 11px; color: var(--faint); flex: none }
+
+.pj-tpls { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px }
+.pj-tpl { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; row-gap: 2px; align-items: start; align-content: start; text-align: left; padding: 12px; border-radius: 12px; border: 1px solid var(--line2); background: var(--panel); transition: border-color .12s, box-shadow .12s, background .12s }
+.pj-tpl:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line2)) }
+.pj-tpl.on { border-color: var(--accent); background: var(--accent-tint); box-shadow: inset 0 0 0 1px var(--accent) }
+.pj-tpl-i { grid-row: span 2; width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; background: var(--sunk); color: var(--muted) }
+.pj-tpl.on .pj-tpl-i { background: var(--accent-soft); color: var(--accent) }
+.pj-tpl b { font-size: 13.5px; font-weight: 600 }
+.pj-tpl > span:last-child { font-size: 12px; line-height: 1.45; color: var(--muted) }
+
+.pj-bk.on { background: var(--accent-tint) }
+.pj-bk-choose { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end }
+.pj-bk-note { flex-basis: 100%; margin: 0 }
+.pj-path { overflow-wrap: anywhere; user-select: text }

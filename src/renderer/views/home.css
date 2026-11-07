@@ -37,3 +37,5 @@
 .home-rec a { text-decoration: none } .home-rec a:hover b { color: var(--accent-ink) }
 .home-rec b { font-weight: 500; color: var(--ink) }
 .home-undo-gap { width: 52px; flex: none }
+button.home-goal { border: 0; background: transparent; padding: 2px 4px; margin: -2px -4px; border-radius: 5px }
+button.home-goal:hover { background: var(--hover); color: var(--ink2) }

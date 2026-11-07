@@ -2,6 +2,7 @@ import {
   type State, type Story, type Scene, type Entity, type Fact, type Question, type Proposal, type Message, type Kind,
   project, stories, events, plainFacts, entities, scenesOf, list, get, nameOf, eventCode, uid, typeDef, typesOf, position, readerLearns,
   guidesFor, bannedPhrases, notesFor, nextAt, newScene, newFact, newQuestion, newEntityData, sceneRef, type GuideKind,
+  flowOf, sectionsOf, sectionNumber, chapterOf, partOf, type Section,
 } from './store.ts'
 import { sha256 } from './ai.ts'
 
@@ -143,12 +144,24 @@ export function describe(s: State, p: Proposal) {
 
 // ---------------- builds ----------------
 
+const secName = (s: State, x: Section) => `${x.type === 'part' ? 'Part' : 'Chapter'} ${sectionNumber(s, x.id)}${x.title.trim() ? `: ${x.title.trim()}` : ''}`
+
 function storyOutline(s: State, story: Story, current?: Scene) {
+  let i = 0
+  // Chapter and part headings only when the story has them, so an unstructured story's prompt (and its hashes) don't change.
+  const flow = sectionsOf(s, story.id).length ? flowOf(s, story.id) : scenesOf(s, story.id)
   return [
     `Title: ${story.title}`, story.pov ? `POV: ${nameOf(s, story.pov)}` : '', story.premise ? `Premise: ${story.premise}` : '',
     story.beats.length ? `Beat pattern: ${story.beats.join(' → ')}` : '', '', 'Scenes:',
-    ...scenesOf(s, story.id).map((sc, i) => `${i + 1}. ${sc.id === current?.id ? '[THIS SCENE] ' : ''}${sc.beat ? `(${sc.beat}) ` : ''}${sc.title}: ${sc.card}`),
+    ...flow.map(x => x.kind === 'section' ? `[${secName(s, x)}]`
+      : `${++i}. ${x.id === current?.id ? '[THIS SCENE] ' : ''}${x.beat ? `(${x.beat}) ` : ''}${x.title}: ${x.card}`),
   ].filter(l => l !== '').join('\n')
+}
+
+/** The part and chapter a scene sits in, with their synopses: what the scene is for, a level up. */
+function chapterBlock(s: State, scene: Scene) {
+  return [partOf(s, scene.id), chapterOf(s, scene.id)].filter((x): x is Section => !!x)
+    .map(x => secName(s, x) + (x.synopsis.trim() ? `\n${x.synopsis.trim()}` : '')).join('\n\n')
 }
 
 function cardBlock(s: State, scene: Scene) {
@@ -170,16 +183,27 @@ function sceneContext(s: State, story: Story, scene: Scene) {
     + section('Facts this scene reveals', reveals.join('\n'))
     + section(`What ${story.pov ? nameOf(s, story.pov) : 'the POV'} knows at this point`, knowledgeBlock(s, story.pov, scene.id))
     + section('Story outline', storyOutline(s, story, scene))
+    + section('The chapter this scene is in', chapterBlock(s, scene))
     + section('End of the previous scene (for continuity)', prev ? prev.slice(-6000) : '')
 }
 
-export function buildScene(s: State, story: Story, scene: Scene) {
+/** How text is written in Canon: what the editor styles and export understands. */
+const FORMAT = {
+  prose: 'One paragraph per line. *Asterisks* for italics. A line with only "* * *" for a break within the scene. No other markdown.',
+  docs: 'One paragraph per line. *Asterisks* for italics. A line starting "# " for a heading the document itself has. No other markdown.',
+}
+
+export function buildScene(s: State, story: Story, scene: Scene) { return sceneInputs(s, story, scene, true) }
+
+// The format rules are left out of the hash, so adding them didn't mark every drafted scene as changed.
+function sceneInputs(s: State, story: Story, scene: Scene, format: boolean) {
   const docs = story.form === 'documents'
   const scopes = scopesFor(s, story, scene)
   const banned = bannedPhrases(s)
   const system = (docs
     ? 'You produce in-world documents (notices, memos, listings, reports) for a work of fiction. The author writes the parameters; you render one document that honors every parameter. Output only the document text.'
     : 'You are the prose engine for a work of fiction. The author shapes the parameters: project, entities, events, knowledge boundaries, scene cards. Render one scene as finished prose that honors every parameter, especially knowledge boundaries. Output only the scene prose: no title, no notes, no markdown headings.')
+    + (format ? section('Format', docs ? FORMAT.docs : FORMAT.prose) : '')
     + section('Style guide', guideText(s, scopes, 'style', docs))
     + section('Rules from the author', guideText(s, scopes, 'rule'))
     + section('Never use these phrases', banned.map(b => `"${b}"`).join(', '))
@@ -187,7 +211,7 @@ export function buildScene(s: State, story: Story, scene: Scene) {
 }
 
 export const inputHash = (s: State, story: Story, scene: Scene) => {
-  const { system, prompt } = buildScene(s, story, scene)
+  const { system, prompt } = sceneInputs(s, story, scene, false)
   return sha256(system + '\n\u0000\n' + prompt)
 }
 
@@ -195,7 +219,7 @@ export function directPassage(s: State, story: Story, scene: Scene, start: numbe
   const { system } = buildScene(s, story, scene)
   const marked = scene.prose.slice(0, start) + '<<<SELECTED>>>' + scene.prose.slice(start, end) + '<<<END>>>' + scene.prose.slice(end)
   return {
-    system: system + '\n\nYou are now revising. Rewrite ONLY the passage between <<<SELECTED>>> and <<<END>>> following the author\'s direction. It must flow into the surrounding text. Return only the replacement passage, without markers or commentary.',
+    system: system + '\n\nYou are now revising. Rewrite ONLY the passage between <<<SELECTED>>> and <<<END>>> following the author\'s direction. It must flow into the surrounding text. Return only the replacement passage, without markers or commentary. Keep the author\'s markup as it is (*italics*, ^[footnotes], scene breaks) and follow the same format.',
     prompt: sceneContext(s, story, scene) + section('Scene card', cardBlock(s, scene)) + section('Current scene text', marked) + section('Direction', direction),
   }
 }

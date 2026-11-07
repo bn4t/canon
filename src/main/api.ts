@@ -9,6 +9,11 @@ import { ChatGPT } from './siwc.ts'
 import { AI, type AIRequest } from './ai.ts'
 import { epub, type Book } from './epub.ts'
 import { writeAtomic } from './files.ts'
+import { json, text, none, body, type Routes } from './http.ts'
+import { researchRoutes } from './research.ts'
+import { importRoutes } from './convert.ts'
+import { projectRoutes } from './projects.ts'
+import { exportRoutes } from './exporter.ts'
 
 export interface Host {
   /** Native folder picker; undefined when cancelled. */
@@ -17,22 +22,25 @@ export interface Host {
   save(defaultName: string, data: Uint8Array): Promise<string | undefined>
   /** Render a standalone HTML document to PDF. */
   pdf(html: string): Promise<Uint8Array>
+  /** Show the system print dialog for a standalone HTML document. */
+  print(html: string): Promise<void>
+  /** Native open dialog for files; [] when cancelled. `filters`: e.g. [{ name: 'Word', extensions: ['docx'] }]. */
+  pickFiles(title: string, filters?: { name: string; extensions: string[] }[], multi?: boolean): Promise<string[]>
+  /** Move a file or folder to the Trash. */
+  trash(path: string): Promise<void>
+  /** Reload the renderer (after switching projects). */
+  reload(): void
   reveal(path: string): void
   openExternal(url: string): void
   /** Something outside the renderer changed (e.g. a sign-in finished in the browser). */
   notify(event: string): void
 }
 
-export interface ApiOptions { store: Store; dataDir: string; host: Host; root?: string; version?: string; fetchImpl?: typeof fetch }
-
-const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'Content-Type': 'application/json' } })
-const text = (t: string, status: number) => new Response(t, { status, headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
-const none = () => new Response(null, { status: 204 })
-const body = async <T>(r: Request, limit = 64 << 20): Promise<T> => {
-  const t = await r.text()
-  if (t.length > limit) throw new BadRequest('request too large')
-  try { return JSON.parse(t) } catch { throw new BadRequest('invalid json') }
-}
+/** The options object is live: switching projects replaces `store` and `projectDir` on it (see projects.ts), and every route reads them per request.
+ * `dataDir`: machine-wide (settings, sign-ins, the project list). `projectDir`: the open project's folder (its database, `files/`, `backups/`); dataDir when unset. */
+export interface ApiOptions { store: Store; dataDir: string; host: Host; root?: string; version?: string; fetchImpl?: typeof fetch; projectDir?: string; dbPath?: string }
+export const projectDir = (o: ApiOptions) => o.projectDir || o.dataDir
+export const dbPath = (o: ApiOptions) => o.dbPath || join(projectDir(o), 'canon.db')
 
 export function createApi(o: ApiOptions) {
   const auth = new AuthStore(join(o.dataDir, 'auth.json'))
@@ -64,8 +72,9 @@ export function createApi(o: ApiOptions) {
   }
   const settingsPath = join(o.dataDir, 'settings.json')
 
-  const routes: Record<string, (r: Request, u: URL) => Promise<Response> | Response> = {
-    'GET /api/info': () => json({ root: root || '', dataDir: o.dataDir, backups: join(o.dataDir, 'backups'), version: o.version || '' }),
+  const routes: Routes = {
+    ...researchRoutes(o), ...importRoutes(o), ...projectRoutes(o), ...exportRoutes(o),
+    'GET /api/info': () => json({ root: root || '', dataDir: o.dataDir, projectDir: projectDir(o), db: dbPath(o), backups: join(projectDir(o), 'backups'), version: o.version || '' }),
     'GET /api/records': () => json(o.store.list()),
     'POST /api/records': async r => { o.store.save(await body<ChangeSet>(r)); return none() },
     'POST /api/undo': () => json(o.store.step(true)),

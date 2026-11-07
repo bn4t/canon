@@ -7,8 +7,9 @@ import { tmpdir } from 'node:os'
 import { dirname, extname, join, normalize, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from './db.ts'
-import { createApi, type Host } from './api.ts'
+import { createApi, type Host, type ApiOptions } from './api.ts'
 import { writeAtomic } from './files.ts'
+import { currentProject, noteOpened, onProjectsChanged, recentProjects } from './projects.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const RENDERER = join(here, '..', 'renderer')
@@ -71,6 +72,24 @@ const host: Host = {
       rmSync(file, { force: true })
     }
   },
+  async print(html) {
+    const file = join(tmpdir(), `canon-print-${process.pid}-${Date.now()}.html`)
+    writeFileSync(file, html)
+    const w = new BrowserWindow({ show: false, webPreferences: { sandbox: true, javascript: false } })
+    try {
+      await w.loadFile(file)
+      await new Promise<void>(res => w.webContents.print({ silent: false, printBackground: false }, () => res()))
+    } finally {
+      w.destroy()
+      rmSync(file, { force: true })
+    }
+  },
+  async pickFiles(title, filters, multi = true) {
+    const r = await dialog.showOpenDialog(win!, { title, filters, properties: multi ? ['openFile', 'multiSelections'] : ['openFile'] })
+    return r.canceled ? [] : r.filePaths
+  },
+  trash: p => shell.trashItem(p),
+  reload: () => { win?.webContents.reload() },
   reveal: p => shell.showItemInFolder(p),
   openExternal: url => { shell.openExternal(url) },
   notify(event) {
@@ -103,7 +122,8 @@ function serveStatic(url: URL): Response | Promise<Response> {
 // ---------------- menu ----------------
 
 const isTyping = 'document.activeElement?.closest?.("input, textarea, select, [contenteditable]")'
-function menu(): Menu {
+/** `recent`: other projects for File ▸ Open Recent, newest first. */
+function menu(recent: { title: string; db: string }[] = []): Menu {
   const cmd = (label: string, command: string, accelerator?: string, extra: Partial<MenuItemConstructorOptions> = {}): MenuItemConstructorOptions =>
     ({ label, accelerator, click: () => send('canon:menu', command), ...extra })
   // Undo is one item for both: inside a text field it undoes typing, elsewhere it undoes the last change to the canon.
@@ -123,10 +143,22 @@ function menu(): Menu {
     ] }] : []),
     { label: 'File', submenu: [
       cmd('New Scene', 'new-scene', 'CmdOrCtrl+N'),
+      cmd('New Chapter', 'new-chapter', 'Alt+CmdOrCtrl+N'),
       cmd('New Story', 'new-story', 'Shift+CmdOrCtrl+N'),
       { type: 'separator' },
-      cmd('Import Files…', 'import'),
+      cmd('New Project…', 'new-project'),
+      cmd('Open Project…', 'open-project', 'CmdOrCtrl+O'),
+      { label: 'Open Recent', submenu: [
+        ...recent.map(p => cmd(p.title, 'open-project:' + p.db)),
+        ...(recent.length ? [{ type: 'separator' as const }] : []),
+        cmd('All Projects…', 'switch-project'),
+      ] },
+      cmd('Switch Project…', 'switch-project', 'Shift+CmdOrCtrl+O'),
+      cmd('Duplicate Project…', 'duplicate-project'),
+      { type: 'separator' },
+      cmd('Import…', 'import', 'Shift+CmdOrCtrl+I'),
       cmd('Export…', 'settings:export', 'CmdOrCtrl+E'),
+      cmd('Print…', 'print', 'CmdOrCtrl+P'),
       { type: 'separator' },
       cmd('Show Project File in ' + (isMac ? 'Finder' : 'Folder'), 'reveal-data'),
       { type: 'separator' },
@@ -136,14 +168,26 @@ function menu(): Menu {
       history(true), history(false), { type: 'separator' },
       { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'pasteAndMatchStyle' }, { role: 'selectAll' },
       { type: 'separator' },
+      cmd('Find…', 'find', 'CmdOrCtrl+F'),
       cmd('Find in Project', 'go:find', 'Shift+CmdOrCtrl+F'),
       ...(isMac ? [{ type: 'separator' as const }, { label: 'Speech', submenu: [{ role: 'startSpeaking' as const }, { role: 'stopSpeaking' as const }] }] : []),
+    ] },
+    { label: 'Format', submenu: [
+      cmd('Bold', 'format:bold', 'CmdOrCtrl+B'),
+      cmd('Italic', 'format:italic', 'CmdOrCtrl+I'),
+      { type: 'separator' },
+      cmd('Block Quote', 'format:quote', "Alt+CmdOrCtrl+'"),
+      cmd('Heading', 'format:heading'),
+      cmd('Scene Break', 'format:break', 'Alt+CmdOrCtrl+Return'),
+      cmd('Footnote', 'format:footnote', 'Alt+CmdOrCtrl+F'),
     ] },
     { label: 'View', submenu: [
       cmd('Search and Commands…', 'palette', 'CmdOrCtrl+K'),
       cmd('Toggle Sidebar', 'sidebar', 'CmdOrCtrl+\\'),
       cmd('Toggle Assistant', 'assistant', 'CmdOrCtrl+J'),
+      cmd('Toggle Reference Pane', 'reference', 'Alt+CmdOrCtrl+R'),
       cmd('Focus Mode', 'focus', 'Shift+CmdOrCtrl+Return'),
+      cmd('Typewriter Scrolling', 'typewriter'),
       { type: 'separator' },
       { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' },
       { role: 'togglefullscreen' },
@@ -151,7 +195,7 @@ function menu(): Menu {
     ] },
     { label: 'Go', submenu: [
       cmd('Home', 'go:home', 'CmdOrCtrl+1'), cmd('Outline', 'go:outline', 'CmdOrCtrl+2'), cmd('World', 'go:world', 'CmdOrCtrl+3'),
-      cmd('Timeline', 'go:timeline', 'CmdOrCtrl+4'), cmd('Questions', 'go:questions', 'CmdOrCtrl+5'),
+      cmd('Timeline', 'go:timeline', 'CmdOrCtrl+4'), cmd('Questions', 'go:questions', 'CmdOrCtrl+5'), cmd('Research', 'go:research', 'CmdOrCtrl+6'),
       { type: 'separator' },
       cmd('Previous Scene', 'scene:prev', 'Alt+CmdOrCtrl+Up'), cmd('Next Scene', 'scene:next', 'Alt+CmdOrCtrl+Down'),
       { type: 'separator' },
@@ -161,7 +205,7 @@ function menu(): Menu {
     { role: 'windowMenu' },
     { role: 'help', submenu: [
       { label: 'Sign in with ChatGPT: what Canon can see', click: () => shell.openExternal('https://developers.openai.com/siwc') },
-      { label: 'Open Backups Folder', click: () => shell.openPath(join(dataDir, 'backups')) },
+      cmd('Restore from a Backup…', 'settings:backups'),
     ] },
   ]
   return Menu.buildFromTemplate(template)
@@ -175,7 +219,8 @@ function createWindow() {
     ...st, minWidth: 880, minHeight: 560, show: false, title: 'Canon',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#141416' : '#f7f6f3',
     ...(isMac ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 18, y: 18 } } : { autoHideMenuBar: true }),
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: true },
+    // plugins: Chromium's built-in PDF viewer, for research PDFs.
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: true, plugins: true },
   })
   if (st.maximized) win.maximize()
   win.once('ready-to-show', () => win?.show())
@@ -197,33 +242,43 @@ function createWindow() {
     if (items.length) Menu.buildFromTemplate(items).popup()
   })
 
-  // Hold the close until the renderer has written its pending edits.
+  // Hold the close until the renderer has written its pending edits. Holding it cancels a quit (⌘Q), so a quit
+  // carries on once the edits are written; otherwise the window would close and Canon keep running without one.
   let flushed = false
   win.on('close', e => {
     saveState(win!)
     if (flushed) return
     e.preventDefault()
-    const done = () => { flushed = true; win?.close() }
+    const done = () => { flushed = true; if (quitting) app.quit(); else win?.close() }
     Promise.race([win!.webContents.executeJavaScript('window.__canonFlush ? window.__canonFlush() : null'), new Promise(r => setTimeout(r, 4000))]).then(done, done)
   })
   win.on('closed', () => { win = undefined })
 }
 
+let quitting = false
+app.on('before-quit', () => { quitting = true })
+
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus() } })
 
 app.whenReady().then(() => {
-  const store = new Store(join(dataDir, 'canon.db'))
-  try { store.backup(join(dataDir, 'backups')) } catch (e) { console.error('backup:', e) }
-  const api = createApi({ store, dataDir, host, root: arg('root'), version: app.getVersion() })
+  const cur = currentProject(dataDir)
+  const store = new Store(cur.db)
+  try { store.backup(join(cur.dir, 'backups')) } catch (e) { console.error('backup:', e) }
+  noteOpened(dataDir, cur)
+  // Live options: switching projects swaps store, projectDir and dbPath on this object (projects.ts).
+  const opts: ApiOptions = { store, dataDir, projectDir: cur.dir, dbPath: cur.db, host, root: arg('root'), version: app.getVersion() }
+  const api = createApi(opts)
   protocol.handle('canon', req => {
     const url = new URL(req.url)
     if (url.host !== 'app') return new Response('not found', { status: 404 })
     return url.pathname.startsWith('/api/') ? api(req) : serveStatic(url)
   })
-  Menu.setApplicationMenu(menu())
+  const recent = () => recentProjects(opts).filter(p => !p.current).map(p => ({ title: p.title, db: p.db }))
+  onProjectsChanged(() => Menu.setApplicationMenu(menu(recent())))
+  Menu.setApplicationMenu(menu(recent()))
   createWindow()
   app.on('activate', () => { if (!win) createWindow() })
-  app.on('will-quit', () => store.close())
+  app.on('will-quit', () => opts.store.close())
 })
 
 app.on('window-all-closed', () => { if (!isMac) app.quit() })

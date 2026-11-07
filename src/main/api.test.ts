@@ -12,6 +12,7 @@ const host = (picked?: string): Host & { saved: { name: string; data: Uint8Array
   return {
     saved, pickFolder: async () => picked, save: async (name, data) => { saved.push({ name, data }); return '/x/' + name },
     pdf: async () => new Uint8Array([37, 80, 68, 70]), reveal: () => {}, openExternal: () => {}, notify: () => {},
+    print: async () => {}, pickFiles: async () => [], trash: async () => {}, reload: () => {},
   }
 }
 const req = (method: string, path: string, body?: unknown) =>

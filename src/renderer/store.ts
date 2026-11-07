@@ -2,12 +2,17 @@ import { useSyncExternalStore } from 'react'
 import { DEFAULT_TYPES, type EntityType, type TypeDef } from './schema.ts'
 
 // ---------------- the primitives ----------------
-// World: entity, fact (an event is a fact with a time), question. Manuscript: story, scene.
-// Craft: guide. Feedback: note (about the text), question (about the world and story).
+// World: entity, fact (an event is a fact with a time), question. Manuscript: story, section (part or chapter), scene.
+// Craft: guide. Feedback: note (about the text), question (about the world and story). Research: files, pages and notes.
 // Supporting: project (singleton, id "project"), chat, day (writing history, outside undo).
 
-export type SceneStatus = 'todo' | 'draft' | 'revised' | 'final'
-export const STATUSES: { id: SceneStatus; label: string }[] = [{ id: 'todo', label: 'To do' }, { id: 'draft', label: 'First draft' }, { id: 'revised', label: 'Revised' }, { id: 'final', label: 'Final' }]
+/** A scene's status id. The project can rename, recolour, reorder and add statuses; these four are the defaults. */
+export type SceneStatus = string
+export interface StatusDef { id: SceneStatus; label: string; color: string }
+export const STATUSES: StatusDef[] = [
+  { id: 'todo', label: 'To do', color: 'var(--line2)' }, { id: 'draft', label: 'First draft', color: 'var(--l-yellow)' },
+  { id: 'revised', label: 'Revised', color: 'var(--l-blue)' }, { id: 'final', label: 'Final', color: 'var(--l-green)' },
+]
 export const LABELS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'] as const
 
 /** How a scene touches a fact: shown on the page, or felt (the effect without the cause). */
@@ -19,7 +24,16 @@ export interface Snapshot { text: string; at: string; name?: string }
 export type FieldKind = 'text' | 'check' | 'list' | 'date'
 export interface MetaField { key: string; label: string; kind: FieldKind; options?: string[] }
 export interface Filter { q?: string; story?: string; label?: string; status?: string; tag?: string; cast?: string; fact?: string; exclude?: boolean }
-export interface Collection { id: string; name: string; filter: Filter }
+/** A collection is smart (a saved filter) unless it has `ids`: then it is a hand-picked, hand-ordered list of scenes. */
+export interface Collection { id: string; name: string; filter: Filter; ids?: string[] }
+/** Front and back matter, and the metadata ebooks and title pages need. Every field is optional. */
+export interface BookInfo {
+  subtitle?: string; series?: string; seriesIndex?: number; publisher?: string; isbn?: string; language?: string; description?: string
+  copyright?: string; dedication?: string; epigraph?: string; acknowledgements?: string; about?: string
+  /** A research item (an image) used as the ebook cover. */
+  cover?: string
+}
+export type ResearchType = 'pdf' | 'image' | 'web' | 'note' | 'audio' | 'video' | 'file'
 export interface Message { role: 'user' | 'assistant'; text: string; proposals?: Proposal[] }
 /** A change the AI suggests; nothing happens until the author applies it. */
 export interface Proposal { op: 'update' | 'create' | 'edit'; id?: string; kind?: Kind; set?: Record<string, unknown>; data?: Record<string, unknown>; why?: string; newId?: string
@@ -42,7 +56,16 @@ export type Severity = 'critical' | 'error' | 'warning' | 'note'
 interface Data {
   project: { title: string; author?: string; logline: string; thesis: string; background: string
     types: Record<string, TypeDef>; labels?: Record<string, string>; sceneFields?: MetaField[]; collections?: Collection[]
-    emDashCheck?: boolean; scratch?: string; target?: number; deadline?: string; sessionTarget?: number }
+    emDashCheck?: boolean; scratch?: string; target?: number; deadline?: string; sessionTarget?: number
+    /** Work the daily goal out from the target and the deadline (see dailyGoal), counting only `writingDays` (0 = Sunday; all when unset). */
+    goalFromDeadline?: boolean; writingDays?: number[]
+    /** Custom scene statuses, in order; STATUSES when unset. */
+    statuses?: StatusDef[]
+    /** Records pinned to the sidebar (bookmarks): scenes, sections, entities, research. */
+    pins?: string[]
+    book?: BookInfo
+    /** Export settings and saved profiles, owned by compile.ts. */
+    exportPrefs?: Record<string, unknown> }
   entity: { type: EntityType; name: string; aliases: string[]; summary: string; fields: Record<string, string>; notes: string; relations: { to: string; label: string }[] }
   /** Something true. With `at` it is an event: it happens at that place in world order, caused by earlier events. */
   fact: { text: string; detail: string; at?: number; causes: string[]; knows: Record<string, KCell>
@@ -50,6 +73,9 @@ interface Data {
     n?: number }
   question: { type: QKind; text: string; about: string[]; options: { title: string; detail: string; proposal?: Proposal }[]; answer: string; by: 'you' | 'ai' | 'check'; dismissed?: boolean; at: string }
   story: { title: string; order: number; pov?: string; form: 'prose' | 'documents'; premise: string; beats: string[]; target?: number }
+  /** A part or chapter heading inside a story. It shares the scenes' `order` space: it starts before the scenes that follow it,
+   * and runs until the next section of the same or a higher level (a part holds chapters; a chapter holds scenes). */
+  section: { story: string; order: number; type: 'part' | 'chapter'; title: string; synopsis: string; exclude?: boolean }
   scene: { story: string; order: number; title: string; card: string; wants: string; mustLand: string[]; beat: string; cast: string[]; links: Record<string, Link>
     prose: string; pinned: boolean; builtHash?: string; snapshots: Snapshot[]
     status?: SceneStatus; label?: string; tags?: string[]; target?: number; exclude?: boolean; meta?: Record<string, string> }
@@ -59,11 +85,16 @@ interface Data {
   chat: { mode: 'assistant' | 'interview'; entity?: string; asOf?: string; title: string; messages: Message[]; at: string }
   /** Writing history: total words at the first and latest save of a day (outside undo). */
   day: { date: string; start: number; words: number }
+  /** Reference material. `file`: the stored file's name in the project's files folder (served at /api/files?name=…).
+   * `text`: your notes (a note's whole body). `clip`: a web page's readable text, kept so it can be read and searched offline.
+   * `about`: linked entities, scenes, sections, stories. */
+  research: { title: string; type: ResearchType; file?: string; mime?: string; size?: number; url?: string; text: string; clip?: string; about: string[]; folder?: string; at: string }
 }
 export type Kind = keyof Data
 export type R<K extends Kind> = Data[K] & { id: string; kind: K }
 export type Project = R<'project'>; export type Entity = R<'entity'>; export type Fact = R<'fact'>; export type Question = R<'question'>
 export type Story = R<'story'>; export type Scene = R<'scene'>; export type Guide = R<'guide'>; export type Note = R<'note'>; export type Chat = R<'chat'>
+export type Section = R<'section'>; export type Research = R<'research'>
 type AnyRec = { [K in Kind]: R<K> }[Kind]
 
 export interface State {
@@ -101,6 +132,69 @@ export const stories = (s: State) => list(s, 'story').sort(byOrder)
 export const scenesOf = (s: State, story: string) => list(s, 'scene').filter(x => x.story === story).sort(byOrder)
 /** Every scene in reading order. */
 export const allScenes = (s: State) => stories(s).flatMap(st => scenesOf(s, st.id))
+
+// ---------------- manuscript structure: parts and chapters ----------------
+// A story's scenes and sections share one `order` space and read as one flow. A section starts before the items after it.
+// Rank: a part (1) contains chapters (2); a chapter contains scenes. Scenes before the first section belong to no chapter.
+
+export type FlowItem = Section | Scene
+const rank = (x: FlowItem) => (x.kind === 'section' ? (x.type === 'part' ? 1 : 2) : 3)
+export const sectionsOf = (s: State, story: string) => list(s, 'section').filter(x => x.story === story).sort(byOrder)
+/** A story's sections and scenes in reading order (a section sorts before a scene with the same order). */
+export const flowOf = (s: State, story: string): FlowItem[] =>
+  [...sectionsOf(s, story), ...scenesOf(s, story)].sort((a, b) => a.order - b.order || rank(a) - rank(b))
+/** Everything a section contains, in order: up to the next section of the same or a higher level. */
+export function contentsOf(s: State, sectionId: string): FlowItem[] {
+  const sec = get(s, sectionId, 'section')
+  if (!sec) return []
+  const flow = flowOf(s, sec.story), i = flow.findIndex(x => x.id === sec.id), out: FlowItem[] = []
+  for (const x of flow.slice(i + 1)) { if (x.kind === 'section' && rank(x) <= rank(sec)) break; out.push(x) }
+  return out
+}
+export const scenesIn = (s: State, sectionId: string) => contentsOf(s, sectionId).filter((x): x is Scene => x.kind === 'scene')
+/** The section of a type that a scene (or section) falls under, if any. */
+export function sectionAbove(s: State, id: string, type: 'part' | 'chapter'): Section | undefined {
+  const r = s.recs[id] as FlowItem | undefined
+  if (!r || (r.kind !== 'scene' && r.kind !== 'section')) return
+  const flow = flowOf(s, r.story), i = flow.findIndex(x => x.id === id)
+  for (let j = i - 1; j >= 0; j--) {
+    const x = flow[j]
+    if (x.kind !== 'section') continue
+    if (x.type === type) return x
+    if (type === 'chapter' && x.type === 'part') return // a part boundary ends the search for a chapter
+  }
+}
+export const chapterOf = (s: State, id: string) => sectionAbove(s, id, 'chapter')
+export const partOf = (s: State, id: string) => sectionAbove(s, id, 'part')
+/** A chapter's number in its story, counting every chapter (across parts) from 1; parts count separately. */
+export const sectionNumber = (s: State, id: string) => { const sec = get(s, id, 'section'); return sec ? sectionsOf(s, sec.story).filter(x => x.type === sec.type).findIndex(x => x.id === id) + 1 : 0 }
+/** The flow as a tree, for the sidebar, the outline and export. `scenes`: scenes directly under this node, before its first child section. */
+export interface TreeNode { sec?: Section; scenes: Scene[]; kids: TreeNode[] }
+export function treeOf(s: State, story: string): TreeNode {
+  const root: TreeNode = { scenes: [], kids: [] }
+  let part: TreeNode | undefined, chap: TreeNode | undefined
+  for (const x of flowOf(s, story)) {
+    if (x.kind === 'section' && x.type === 'part') { part = { sec: x, scenes: [], kids: [] }; chap = undefined; root.kids.push(part) }
+    else if (x.kind === 'section') { chap = { sec: x, scenes: [], kids: [] }; (part || root).kids.push(chap) }
+    else (chap || part || root).scenes.push(x)
+  }
+  return root
+}
+
+/** Pure: `flow` with `moving` taken out and put back, in their given order, just before `beforeId` (or at the end). */
+export function arrange<T extends { id: string }>(flow: T[], moving: T[], beforeId?: string): T[] {
+  const ids = new Set(moving.map(x => x.id))
+  const out = flow.filter(x => !ids.has(x.id))
+  const at = beforeId ? out.findIndex(x => x.id === beforeId) : -1
+  out.splice(at < 0 ? out.length : at, 0, ...moving)
+  return out
+}
+
+/** Custom statuses, or the defaults. */
+export const statusesOf = (s: State): StatusDef[] => project(s).statuses?.length ? project(s).statuses! : STATUSES
+export const statusOf = (s: State, id?: string): StatusDef => { const all = statusesOf(s); return all.find(x => x.id === (id || 'todo')) || all[0] || STATUSES[0] }
+/** Research items, newest first; `about` narrows to items linked to a record. */
+export const researchOf = (s: State, about?: string) => list(s, 'research').filter(r => !about || r.about.includes(about)).sort((a, b) => b.at.localeCompare(a.at))
 /** Facts with a time, in world order. */
 export const events = (s: State) => list(s, 'fact').filter(f => f.at !== undefined).sort((a, b) => a.at! - b.at!)
 /** Facts without a time: secrets, states of the world. */
@@ -116,7 +210,8 @@ export function nameOf(s: State, id?: string): string {
   const r = id ? s.recs[id] : undefined
   if (!r) return ''
   if (r.kind === 'entity') return r.name
-  if (r.kind === 'story' || r.kind === 'scene') return r.title
+  if (r.kind === 'story' || r.kind === 'scene' || r.kind === 'research') return r.title
+  if (r.kind === 'section') return r.title || (r.type === 'part' ? 'Untitled part' : 'Untitled chapter')
   if (r.kind === 'fact') return (r.at !== undefined ? eventCode(s, r.id) + ' ' : '') + r.text
   if (r.kind === 'question') return r.text
   if (r.kind === 'guide') return r.title
@@ -151,7 +246,7 @@ export const questionsAbout = (s: State, id: string) => list(s, 'question').filt
 /** Scenes matching a collection filter. */
 export function matchScenes(s: State, f: Filter) {
   const q = f.q?.toLowerCase().trim()
-  return allScenes(s).filter(sc => (!f.story || sc.story === f.story) && (!f.label || sc.label === f.label) && (!f.status || (sc.status || 'todo') === f.status)
+  return allScenes(s).filter(sc => (!f.story || sc.story === f.story) && (!f.label || sc.label === f.label) && (!f.status || statusOf(s, sc.status).id === f.status)
     && (!f.tag || (sc.tags || []).some(t => t.toLowerCase() === f.tag!.toLowerCase())) && (!f.cast || sc.cast.includes(f.cast)) && (!f.fact || !!sc.links[f.fact])
     && (!f.exclude || !!sc.exclude) && (!q || (sc.title + '\n' + sc.card + '\n' + sc.prose).toLowerCase().includes(q)))
 }
@@ -242,7 +337,8 @@ export function tx(label: string, fn: () => void, toast = true) {
 export function showToast(text: string, undo = false, action?: { label: string; run: () => void }) { set({ toast: { text, undo, action, at: Date.now() } }) }
 export function clearError() { set({ error: undefined }) }
 
-export const words = (t: string) => (t.match(/\S+/g) || []).length
+/** Words, not markup: tokens with no letter or digit (a scene break "* * *", a quote's ">") don't count. */
+export const words = (t: string) => { let n = 0; for (const w of t.match(/\S+/g) || []) if (/[\p{L}\p{N}]/u.test(w)) n++; return n }
 export const totalWords = (s: State) => list(s, 'scene').reduce((n, sc) => n + words(sc.prose), 0)
 export const today = () => new Date().toLocaleDateString('sv') // YYYY-MM-DD, local
 
@@ -264,13 +360,31 @@ function trackWords() {
 /** Words written today, from the day record (0 before the first save). */
 export const sessionWords = (s: State) => { const d = get(s, 'day_' + today(), 'day'); return d ? d.words - d.start : 0 }
 
+const localDate = (d: string) => { const [y, m, n] = d.split('-').map(Number); return new Date(y, m - 1, n) }
+/** Writing days from `from` through `deadline`, both included, counting only the given weekdays (0 = Sunday). */
+export function writingDaysLeft(deadline: string, days: number[] = [0, 1, 2, 3, 4, 5, 6], from = today()) {
+  const end = localDate(deadline), d = localDate(from)
+  let n = 0
+  for (let i = 0; d <= end && i < 4000; i++, d.setDate(d.getDate() + 1)) if (days.includes(d.getDay())) n++
+  return n
+}
+/** Today's goal in words. Worked out from the target and the deadline when the author chose that (from the words at the start of
+ * today, so it doesn't shrink while they write); otherwise the fixed daily goal. Undefined: no goal. */
+export function dailyGoal(s: State): number | undefined {
+  const p = project(s)
+  if (!p.goalFromDeadline || !p.target || !p.deadline || p.deadline < today()) return p.sessionTarget
+  const left = Math.max(0, p.target - (totalWords(s) - Math.max(0, sessionWords(s))))
+  const days = writingDaysLeft(p.deadline, p.writingDays?.length ? p.writingDays : undefined)
+  return Math.ceil(left / Math.max(1, days))
+}
+
 export async function load() {
   try {
     const recs: { id: string; kind: Kind; data: Record<string, unknown>; updated: number }[] = await (await fetch('/api/records')).json()
     // Older versions stored other kinds and shapes; an entity is stale when a newer one has the same name (a second import).
     const newest: Record<string, number> = {}
     for (const r of recs) if (r.kind === 'entity') newest[String(r.data.name)] = Math.max(newest[String(r.data.name)] || 0, r.updated)
-    const old = (r: typeof recs[number]) => !['project', 'entity', 'fact', 'question', 'story', 'scene', 'guide', 'note', 'chat', 'day'].includes(r.kind)
+    const old = (r: typeof recs[number]) => !['project', 'entity', 'fact', 'question', 'story', 'section', 'scene', 'guide', 'note', 'chat', 'day', 'research'].includes(r.kind)
       || (r.kind === 'question' && !('type' in r.data)) || (r.kind === 'fact' && !('knows' in r.data)) || (r.kind === 'scene' && !('links' in r.data))
       || (r.kind === 'guide' && !('use' in r.data)) || (r.kind === 'entity' && r.updated < newest[String(r.data.name)])
     const m: Record<string, AnyRec> = {}
@@ -373,5 +487,7 @@ export const newQuestion = (patch: Partial<Data['question']> = {}): Data['questi
   ({ type: 'question', text: '', about: [], options: [], answer: '', by: 'you', at: new Date().toISOString(), ...patch })
 export const newNote = (scene: string, patch: Partial<Data['note']> = {}): Data['note'] => ({ scene, text: '', by: 'you', at: new Date().toISOString(), ...patch })
 export const newEntityData = (type: string, name: string): Data['entity'] => ({ type, name, aliases: [], summary: '', fields: {}, notes: '', relations: [] })
+export const newSection = (story: string, order: number, patch: Partial<Data['section']> = {}): Data['section'] => ({ story, order, type: 'chapter', title: '', synopsis: '', ...patch })
+export const newResearch = (patch: Partial<Data['research']> = {}): Data['research'] => ({ title: 'Untitled', type: 'note', text: '', about: [], at: new Date().toISOString(), ...patch })
 /** Next free "at" for a new event: after the last one. */
 export const nextAt = (s: State) => { const e = events(s); return e.length ? e[e.length - 1].at! + 1 : 1 }

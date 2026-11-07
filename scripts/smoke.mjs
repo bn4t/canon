@@ -1,7 +1,7 @@
 // End-to-end check of the built desktop app against the sample project:
 // npm run build && xvfb-run -a npm run smoke
 import { createRequire } from 'node:module'
-import { mkdtempSync, readFileSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
@@ -79,9 +79,10 @@ await step('new scene from the menu, and it persists across a restart', async ()
   page = await app.firstWindow()
   page.on('pageerror', e => errors.push(e.message))
   await page.waitForSelector('.side')
-  await page.evaluate(() => { location.hash = 'story/st_ledger' })
-  await page.waitForFunction(() => document.querySelectorAll('.tree-scene:not(.add)').length === 6)
-  await page.locator('.tree-scene:not(.add)').nth(5).click()
+  // The new scene was saved: find it among the stored records, then open it.
+  const id = await page.evaluate(async () => (await (await fetch('/api/records')).json()).find(r => r.kind === 'scene' && r.data.title === 'New scene' && r.data.story === 'st_ledger')?.id)
+  assert.ok(id, 'the new scene survived the restart')
+  await page.evaluate(i => { location.hash = 'scene/' + i }, id)
   await page.waitForFunction(() => document.querySelector('.doc-title')?.value === 'New scene')
   assert.equal(await prose(), 'The water turned.')
 })
@@ -89,7 +90,7 @@ await step('new scene from the menu, and it persists across a restart', async ()
 await step('every settings section opens', async () => {
   await menu('settings')
   await page.waitForSelector('.settings-win')
-  for (const name of ['Details and background', 'Goals', 'Guides', 'Labels and scene fields', 'Types and fields', 'Assistant', 'Export and backup', 'Appearance']) {
+  for (const name of ['Details and background', 'Goals', 'Guides', 'Statuses, labels and fields', 'Types and fields', 'Assistant', 'Export', 'Backups', 'Book details', 'Appearance']) {
     await page.locator('.settings-ni', { hasText: name }).click()
     await page.waitForFunction(n => document.querySelector('.settings-head h2')?.textContent === n, name)
   }
@@ -97,19 +98,22 @@ await step('every settings section opens', async () => {
   await page.waitForFunction(() => !document.querySelector('.settings-win'))
 })
 
-await step('exports go through the save dialog (EPUB and PDF)', async () => {
-  for (const [fmt, file] of [['EPUB', 'out.epub'], ['PDF', 'out.pdf']]) {
+await step('exports go through the save dialog (Word, EPUB and PDF)', async () => {
+  for (const [card, file] of [['Manuscript for submission', 'out.docx'], ['Ebook', 'out.epub'], ['Reading copy', 'out.pdf']]) {
     const target = join(dir, file)
     await app.evaluate(({ dialog }, p) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: p }) }, target)
     await menu('settings:export')
-    await page.waitForSelector('.settings-win')
-    await page.getByRole('button', { name: fmt, exact: true }).click()
-    await page.getByRole('button', { name: 'Export…' }).click()
+    const win = page.locator('.settings-win')
+    await win.waitFor()
+    await win.getByRole('radio', { name: card, exact: true }).click()
+    await win.getByRole('button', { name: 'Export…' }).click()
     await page.waitForSelector('.toast', { timeout: 15000 })
     assert.match(await page.locator('.toast').innerText(), new RegExp('Saved ' + file))
-    assert.ok(statSync(target).size > 500, fmt + ' written')
-    if (fmt === 'PDF') assert.equal(readFileSync(target).subarray(0, 4).toString(), '%PDF')
-    else assert.equal(readFileSync(target).subarray(30, 38).toString(), 'mimetype')
+    const b = readFileSync(target)
+    assert.ok(b.length > 500, file + ' written')
+    if (file.endsWith('.pdf')) assert.equal(b.subarray(0, 4).toString(), '%PDF')
+    else if (file.endsWith('.epub')) assert.equal(b.subarray(30, 38).toString(), 'mimetype')
+    else assert.ok(b.subarray(0, 2).toString() === 'PK' && b.includes('word/document.xml'), 'a Word document')
     await page.locator('.toast .x').click()
   }
   await page.keyboard.press('Escape')
@@ -125,5 +129,9 @@ await step('the first run opens the sample project', async () => {
 })
 
 await step('no page errors', async () => { assert.deepEqual(errors, []) })
-await app.close()
+// Electron's close can hang after the window goes; don't let that keep the run alive.
+const proc = app.process() // asked for before closing: Playwright forgets it once the app has gone
+await Promise.race([app.close(), new Promise(r => setTimeout(r, 3000))])
+proc.kill()
 console.log('smoke: all good')
+process.exit(0)

@@ -1,12 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import './editor.css'
 import {
-  update, create, remove, tx, get, getState, scenesOf, entities, words, showToast, project, nameOf, sessionWords, newNote, typeIds, typeDef, eventCode, notesFor,
-  STATUSES, LABELS, type State, type Story, type Scene, type Note, type SceneStatus, type MetaField,
+  update, create, remove, tx, get, getState, scenesOf, entities, words, showToast, project, nameOf, sessionWords, dailyGoal, newNote, typeIds, typeDef, eventCode, notesFor,
+  statusesOf, statusOf, chapterOf, partOf, LABELS, type State, type Story, type Scene, type Note, type MetaField, type StatusDef,
 } from '../store.ts'
 import { useAI, aiReady } from '../ai.ts'
 import { diffWords, diffText } from '../diff.ts'
-import { Area, Popover, useJob, JobStatus, Diff, go, Bar, Icon, MOD, AssistMenu, ConnectPrompt, Spark, askAssistant, ago, useChrome, openSettings, type AssistItem } from '../ui.tsx'
+import { Area, Popover, useJob, JobStatus, Diff, go, Bar, Icon, MOD, AssistMenu, ConnectPrompt, Spark, askAssistant, ago, useChrome, openSettings, openReference, type AssistItem } from '../ui.tsx'
+import { ProseField, Composition, applyFormat, findAll, replaceIn, setText, useTypewriter, type Hl, type FormatCmd } from './Prose.tsx'
+import { exportSelection } from './Export.tsx'
 import { RecordPicker, History, hrefOf } from './shared.tsx'
 import {
   usePendingVer, hunksFor, accept, acceptAll, rejectAll, builtState, BUILT, useHashes, buildOne, deriveCardChanges, applyCardFill, direct, locate, critique, continuity,
@@ -18,6 +20,13 @@ export { addPending, builtState, BUILT, useHashes, buildOne, deriveOne, direct, 
 const labelColor = (l?: string) => (l ? `var(--l-${l})` : 'var(--line2)')
 const plural = (n: number, one: string, many = one + 's') => `${n.toLocaleString()} ${n === 1 ? one : many}`
 const firstName = (name: string) => name.split(' ')[0]
+const DEFAULT_STATUS = ['todo', 'draft', 'revised', 'final']
+/** A status as a pill: the built-in ones keep their tuned colours; a project's own statuses take their colour. */
+export function StatusPill({ st }: { st: StatusDef }) {
+  return DEFAULT_STATUS.includes(st.id) && st.color === ({ todo: 'var(--line2)', draft: 'var(--l-yellow)', revised: 'var(--l-blue)', final: 'var(--l-green)' } as Record<string, string>)[st.id]
+    ? <span className={'status-pill ' + st.id}>{st.label}</span>
+    : <span className="status-pill" style={{ background: `color-mix(in srgb, ${st.color} 22%, transparent)`, color: `color-mix(in srgb, ${st.color} 62%, var(--ink))` }}>{st.label}</span>
+}
 
 /** The scene editor (#scene/<id>). */
 export function SceneView({ s, sceneId }: { s: State; sceneId: string }) {
@@ -30,7 +39,8 @@ export function SceneView({ s, sceneId }: { s: State; sceneId: string }) {
 
 type Mode = 'menu' | 'rewrite' | 'comment' | 'ask'
 interface Tool { range: [number, number]; mode: Mode }
-interface Range { k: string; a: number; b: number; cls: string }
+type Range = Hl
+interface Find { q: string; rep: string; cs: boolean; i: number }
 
 function Editor({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
   usePendingVer()
@@ -53,8 +63,15 @@ function Editor({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
   const [fill, setFill] = useState<CardFill>()
   const [width, setWidth] = useState(1200)
   const [pos, setPos] = useState<Record<string, number>>({})
+  const [find, setFind] = useState<Find>()
+  const findIn = useRef<HTMLInputElement>(null)
+  // Each Find command puts the cursor in the find field (once it's there).
+  const [findAsk, setFindAsk] = useState(0)
+  useEffect(() => { if (findAsk) { findIn.current?.focus(); findIn.current?.select() } }, [findAsk])
+  const tw = useTypewriter()
   const edit = (fn: (x: Scene) => void) => update<'scene'>(sc.id, fn)
   const scs = scenesOf(s, st.id), i = scs.findIndex(x => x.id === sc.id)
+  const chapter = chapterOf(s, sc.id) || partOf(s, sc.id)
   const p = project(s)
   const notes = notesFor(s, sc.id), open = notes.filter(n => !n.done)
   const hunks = live ? [] : hunksFor(s, sc)
@@ -73,6 +90,8 @@ function Editor({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
     const onCmd = (e: Event) => {
       const c = (e as CustomEvent<string>).detail
       if (c === 'focus') setFocus(f => !f)
+      else if (c === 'find') { e.preventDefault(); const t = area.current, sel = t && t.selectionEnd > t.selectionStart && !t.value.slice(t.selectionStart, t.selectionEnd).includes('\n') ? t.value.slice(t.selectionStart, t.selectionEnd) : ''
+        setFind(f => ({ q: sel || f?.q || '', rep: f?.rep || '', cs: !!f?.cs, i: 0 })); setFindAsk(k => k + 1) }
       else if (c === 'scene:prev' && i > 0) go('scene/' + scs[i - 1].id)
       else if (c === 'scene:next' && i < scs.length - 1) go('scene/' + scs[i + 1].id)
     }
@@ -99,9 +118,12 @@ function Editor({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
     else setTool(undefined)
   }
 
-  // Highlights drawn behind the text: notes, suggestions, the selection the toolbar works on.
+  // Highlights drawn behind the text: notes, suggestions, find matches, the selection the toolbar works on.
   const ranges: Range[] = []
+  const matches = find && !live ? findAll(sc.prose, find.q, find.cs) : []
+  const fi = matches.length ? Math.min(find!.i, matches.length - 1) : 0
   if (!live) {
+    matches.forEach(([a, b], j) => ranges.push({ k: 'f:' + j, a, b, cls: 'bk-find' + (j === fi ? ' hot' : '') }))
     for (const n of open) { const r = n.quote ? locate(sc.prose, n.quote) : undefined; if (r) ranges.push({ k: 'n:' + n.id, a: r[0], b: r[1], cls: 'bk-note ' + n.by + (hot === 'n:' + n.id ? ' hot' : '') }) }
     hunks.forEach((h, j) => { if (!h.whole) ranges.push({ k: 'h:' + j, a: h.at, b: h.at + h.p.find!.length, cls: 'bk-sugg' + (j === k ? ' hot' : '') }) })
     if (tool) ranges.push({ k: 'sel', a: tool.range[0], b: tool.range[1], cls: 'bk-sel' })
@@ -120,6 +142,18 @@ function Editor({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
   })
 
   const goTo = (j: number) => { const h = hunks[j]; if (!h) return; setCur(j); if (!h.whole) setFlash([h.at, h.at + h.p.find!.length]) }
+  // Find: step through matches, keeping the current one in view; replace through the field so ⌘Z in the text undoes it.
+  const showMatch = (j: number) => requestAnimationFrame(() => back.current?.querySelector(`[data-a="f:${j}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }))
+  const step = (d: number) => { if (!find || !matches.length) return; const j = (fi + d + matches.length) % matches.length; setFind({ ...find, i: j }); showMatch(j) }
+  const replaceOne = () => { const m = matches[fi], t = area.current; if (!m || !t || !find) return; replaceIn(t, m[0], m[1], find.rep); findIn.current?.focus(); showMatch(fi) }
+  const replaceAll = () => {
+    const t = area.current; if (!t || !find || !matches.length) return
+    let out = '', at = 0
+    for (const [a, b] of matches) { out += sc.prose.slice(at, a) + find.rep; at = b }
+    setText(t, out + sc.prose.slice(at)); findIn.current?.focus()
+    showToast(`Replaced ${plural(matches.length, 'match', 'matches')} in this scene · ${MOD}Z in the text undoes it`)
+  }
+  const format = (cmd: FormatCmd) => { if (area.current && !live) applyFormat(area.current, cmd) }
   const prev = i > 0 ? scs[i - 1] : undefined, next = i < scs.length - 1 ? scs[i + 1] : undefined
   const sel = tool ? sc.prose.slice(tool.range[0], tool.range[1]) : ''
 
@@ -154,14 +188,13 @@ function Editor({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
     { label: 'Check continuity', hint: `Reads all of “${st.title}” against the canon`, dest: 'Margin + Questions', run: check },
   ]
 
-  const textarea = (big?: boolean) => (
-    <textarea ref={area} className="prose-area" value={live || sc.prose} readOnly={!!live} aria-label="Scene text" autoFocus={big} spellCheck
-      placeholder={noCard ? 'Write here. Or write the scene card above and use ✦ Assist › Draft from card.' : 'Write here, or use ✦ Assist › Draft from card.'}
-      onChange={e => edit(x => { x.prose = e.target.value })}
-      onSelect={readSelection} onMouseDown={() => { down.current = true }}
-      onKeyDown={e => { if (e.key === 'Escape' && tool) { e.preventDefault(); setTool(undefined) } }} />
+  const placeholder = noCard ? 'Write here. Or write the scene card above and use ✦ Assist › Draft from card.' : 'Write here, or use ✦ Assist › Draft from card.'
+  if (focus) return (
+    <Composition s={s} title={sc.title} words={w} target={sc.target} onExit={() => setFocus(false)}>
+      <ProseField value={live || sc.prose} readOnly={!!live} ariaLabel="Scene text" autoFocus areaRef={area} placeholder={placeholder} typewriter={tw}
+        onChange={v => edit(x => { x.prose = v })} />
+    </Composition>
   )
-  if (focus) return <Focus sc={sc} editor={textarea(true)} onExit={() => setFocus(false)} />
 
   const author = (p.author || 'You').trim()[0]?.toUpperCase() || 'Y'
   const noteCard = (n: Note) => <NoteCard key={n.id} n={n} author={author} busy={!!job.busy} ready={ready} onHot={on => setHot(on ? 'n:' + n.id : undefined)}
@@ -173,19 +206,23 @@ function Editor({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
   return (
     <div className="ed" ref={root}>
       <Bar>
-        <div className="crumbs grow"><a href={'#story/' + st.id} className="clip">{st.title || 'Untitled story'}</a><Icon name="chevron" size={12} /><b className="clip">{sc.title || 'Untitled scene'}</b>
+        <div className="crumbs grow"><a href={'#story/' + st.id} className="clip">{st.title || 'Untitled story'}</a><Icon name="chevron" size={12} />
+          {chapter && <><a href={'#text/' + chapter.id} className="clip" title="Read and write the whole chapter">{nameOf(s, chapter.id)}</a><Icon name="chevron" size={12} /></>}
+          <b className="clip">{sc.title || 'Untitled scene'}</b>
           <span className="scene-of">Scene {i + 1} of {scs.length}</span></div>
         <button className="icon-btn" disabled={!prev} title={prev ? `Previous scene: ${prev.title}` : 'This is the first scene'} aria-label="Previous scene" onClick={() => prev && go('scene/' + prev.id)}><Icon name="left" /></button>
         <button className="icon-btn" disabled={!next} title={next ? `Next scene: ${next.title}` : 'This is the last scene'} aria-label="Next scene" onClick={() => next && go('scene/' + next.id)}><Icon name="right" /></button>
         <button className="icon-btn" title={`Focus mode (${MOD}⇧↵)`} aria-label="Focus mode" onClick={() => setFocus(true)}><Icon name="focus" /></button>
         <span className="bar-sep" />
         <AssistMenu items={assist} busy={job.busy ? 'busy' : undefined} />
-        <MoreMenu sc={sc} next={next} caret={caret} onHistory={() => setHistory(true)} onDelete={delScene} />
+        <MoreMenu sc={sc} next={next} caret={caret} onHistory={() => setHistory(true)} onDelete={delScene} onFind={() => dispatchEvent(new CustomEvent('canon:command', { detail: 'find', cancelable: true }))} />
         <span className="bar-sep" />
       </Bar>
+      {find && <FindBar find={find} n={matches.length} i={fi} inputRef={findIn} onChange={f => setFind({ ...f, i: f.q !== find.q || f.cs !== find.cs ? 0 : f.i })} onStep={step}
+        onReplace={replaceOne} onReplaceAll={replaceAll} onClose={() => { setFind(undefined); area.current?.focus() }} />}
       {hunks.length > 0 && <SuggestionBar hunks={hunks} k={k} folded={folded} prose={sc.prose} onGo={goTo}
         onCompare={h => setCompare({ title: 'The new draft from the card', before: sc.prose, after: h.p.replace || '' })} />}
-      <div className={'ed-body' + (folded ? ' folded' : '')} ref={body}>
+      <div className={'ed-body' + (folded ? ' folded' : '') + (tw ? ' tw' : '')} ref={body}>
         {folded && <div className="ed-gut" aria-label="Notes, folded while the assistant is open">
           {open.filter(n => ('n:' + n.id) in pos).map(n => (
             <div key={n.id} className="ed-gm-pos" style={{ top: pos['n:' + n.id] }}>
@@ -202,16 +239,18 @@ function Editor({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
             {fill && <CardChanges s={s} sc={sc} fill={fill} onDone={() => setFill(undefined)} />}
             <input className="doc-title" value={sc.title} placeholder="Untitled scene" aria-label="Scene title" onChange={e => edit(x => { x.title = e.target.value })} />
             <JobStatus job={job} />
-            <div className="ed-prose" ref={wrap}>
-              <div className="ed-back" ref={back} aria-hidden="true"><Backdrop text={live || sc.prose} ranges={ranges} /></div>
-              {textarea()}
+            <ProseField className="ed-prose" value={live || sc.prose} readOnly={!!live} ariaLabel="Scene text" placeholder={placeholder} ranges={ranges} typewriter={tw}
+              areaRef={area} backRef={back} wrapRef={wrap} onChange={v => edit(x => { x.prose = v })}
+              onSelect={readSelection} onMouseDown={() => { down.current = true }}
+              onKeyDown={e => { if (e.key === 'Escape' && tool) { e.preventDefault(); setTool(undefined) } else if (e.key === 'Escape' && find) { e.preventDefault(); setFind(undefined) } }}>
               {tool && <SelectionTool key={tool.range.join(':') + tool.mode} tool={tool} setTool={setTool} text={sel} whole={tool.range[0] === 0 && tool.range[1] === sc.prose.length}
                 pov={st.pov ? firstName(nameOf(s, st.pov)) : ''} ready={ready} busy={!!job.busy}
-                top={tool.range[0] === 0 && tool.range[1] === sc.prose.length ? 0 : (pos['z:sel'] ?? 0) - (pos.__wrap ?? 0) + 8} left={Math.max(0, Math.min((pos['x:sel'] ?? 0) - 24, (pos.__w ?? 600) - 452))}
+                top={tool.range[0] === 0 && tool.range[1] === sc.prose.length ? 0 : (pos['z:sel'] ?? 0) - (pos.__wrap ?? 0) + 8} left={Math.max(0, Math.min((pos['x:sel'] ?? 0) - 24, (pos.__w ?? 600) - 520))}
                 onRewrite={dir => rewrite(tool.range, dir)}
                 onComment={text => { tx('Add comment', () => { create('note', newNote(sc.id, { quote: sel, text })) }, false); setTool(undefined) }}
-                onAsk={q => { askAssistant(`About this passage in “${sc.title}”:\n\n“${sel}”${q ? `\n\n${q}` : ''}`); setTool(undefined) }} />}
-            </div>
+                onAsk={q => { askAssistant(`About this passage in “${sc.title}”:\n\n“${sel}”${q ? `\n\n${q}` : ''}`); setTool(undefined) }}
+                onFormat={format} />}
+            </ProseField>
           </div>
         </div>
         {!folded && <aside className="ed-margin" aria-label="Notes">
@@ -228,7 +267,7 @@ function Editor({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
       <footer className="ed-foot">
         <span>{w.toLocaleString()}{sc.target ? ` / ${sc.target.toLocaleString()}` : ''} words</span>
         {sc.target ? <span className="ed-mini" aria-hidden="true"><i style={{ width: Math.min(100, (w / sc.target) * 100) + '%' }} /></span> : null}
-        <span>Today {Math.max(0, sessionWords(s)).toLocaleString()}{p.sessionTarget ? ` / ${p.sessionTarget.toLocaleString()}` : ''}</span>
+        <span>Today {Math.max(0, sessionWords(s)).toLocaleString()}{dailyGoal(s) ? ` / ${dailyGoal(s)!.toLocaleString()}` : ''}</span>
         <span className="grow" />
         <span className="ed-hint">Select text to rewrite or comment · <kbd>{MOD}J</kbd> ask the assistant</span>
         <span className="bar-sep" />
@@ -238,23 +277,6 @@ function Editor({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
       {compare && <CompareDialog {...compare} onClose={() => setCompare(undefined)} />}
     </div>
   )
-}
-
-/** The text again, invisible, with marks where highlights go; anchors (data-a / data-z) mark where each range starts and ends. */
-function Backdrop({ text, ranges }: { text: string; ranges: Range[] }) {
-  const rs = ranges.filter(r => r.b > r.a && r.a >= 0 && r.b <= text.length)
-  const cuts = [...new Set([0, text.length, ...rs.flatMap(r => [r.a, r.b])])].sort((a, b) => a - b)
-  const out: ReactNode[] = []
-  cuts.forEach((c, j) => {
-    for (const r of rs) if (r.b === c) out.push(<span key={'z' + r.k} data-z={r.k} />)
-    for (const r of rs) if (r.a === c) out.push(<span key={'a' + r.k} data-a={r.k} />)
-    const end = cuts[j + 1]
-    if (end === undefined) return
-    const on = rs.filter(r => r.a <= c && r.b >= end)
-    const t = text.slice(c, end)
-    out.push(on.length ? <mark key={'m' + c} className={on.map(r => r.cls).join(' ')}>{t}</mark> : <span key={'t' + c}>{t}</span>)
-  })
-  return <>{out}{'​'}</>
 }
 
 /** Cards placed at their anchors' heights, pushed down so they never overlap. */
@@ -279,9 +301,9 @@ function Floating({ items }: { items: { k: string; y: number; node: ReactNode }[
 
 const QUICK = ['Tighter', 'Colder', 'More subtext', 'Cut the metaphor']
 
-function SelectionTool({ tool, setTool, text, whole, pov, ready, busy, top, left, onRewrite, onComment, onAsk }: {
+function SelectionTool({ tool, setTool, text, whole, pov, ready, busy, top, left, onRewrite, onComment, onAsk, onFormat }: {
   tool: Tool; setTool: (t: Tool | undefined) => void; text: string; whole: boolean; pov: string; ready: boolean; busy: boolean; top: number; left: number
-  onRewrite: (dir: string) => void; onComment: (text: string) => void; onAsk: (q: string) => void
+  onRewrite: (dir: string) => void; onComment: (text: string) => void; onAsk: (q: string) => void; onFormat: (cmd: FormatCmd) => void
 }) {
   const [v, setV] = useState('')
   const mode = tool.mode
@@ -295,6 +317,12 @@ function SelectionTool({ tool, setTool, text, whole, pov, ready, busy, top, left
         <button className={mode === 'rewrite' ? 'on' : ''} onClick={() => set('rewrite')}><Spark size={13} />Rewrite</button>
         {!whole && <button className={mode === 'comment' ? 'on' : ''} onClick={() => set('comment')}><Icon name="comment" size={14} />Comment</button>}
         {!whole && <button className={mode === 'ask' ? 'on' : ''} onClick={() => set('ask')}>Ask about this</button>}
+        {!whole && mode === 'menu' && <span className="ed-tb-fmt" role="group" aria-label="Format">
+          <button title={`Bold (${MOD}B)`} aria-label="Bold" onClick={() => onFormat('bold')}><b>B</b></button>
+          <button title={`Italic (${MOD}I)`} aria-label="Italic" onClick={() => onFormat('italic')}><i>I</i></button>
+          <button title="Block quote" aria-label="Block quote" onClick={() => onFormat('quote')}>❝</button>
+          <button title="Make it a footnote" aria-label="Footnote" onClick={() => onFormat('footnote')}><sup>fn</sup></button>
+        </span>}
         <span className="grow" />
         <span className="ed-tb-n">{whole ? 'Whole scene · ' : ''}{plural(words(text), 'word')}</span>
         <button className="x" aria-label="Close" onClick={() => setTool(undefined)}>×</button>
@@ -446,7 +474,7 @@ function SceneCard({ s, st, sc, built, compact, busy, ready, onFill }: { s: Stat
   const empty = !sc.card.trim()
   const [editing, setEditing] = useState(empty && !sc.prose.trim())
   const [expanded, setExpanded] = useState(false)
-  const status = sc.status || 'todo'
+  const status = statusOf(s, sc.status)
   const docs = st.form === 'documents'
   const landed = new Set((sc.meta?.landed || '').split('\n').filter(Boolean))
   const must = sc.mustLand.filter(m => m.trim())
@@ -454,7 +482,7 @@ function SceneCard({ s, st, sc, built, compact, busy, ready, onFill }: { s: Stat
   if (compact && !expanded && !editing) return (
     <button className="ed-cardrow" onClick={() => setExpanded(true)} title="Show the scene card">
       <span className="lbl">Scene card</span><p>{sc.card || 'No card yet'}</p>
-      <span className={'status-pill ' + status}>{STATUSES.find(x => x.id === status)!.label}</span><Icon name="down" size={12} />
+      <StatusPill st={status} /><Icon name="down" size={12} />
     </button>
   )
   return (
@@ -488,13 +516,13 @@ type PropKey = 'status' | 'beat' | 'label' | 'cast' | 'shows' | 'target' | 'tags
 function Props({ s, st, sc }: { s: State; st: Story; sc: Scene }) {
   const p = project(s), labels = p.labels || {}
   const fields = p.sceneFields || []
-  const status = sc.status || 'todo'
+  const status = statusOf(s, sc.status)
   const chip = (key: PropKey, label: ReactNode) =>
     <Popover key={key} trigger={o => <button className="chip ed-chip" onClick={o}>{label}</button>}>{close => <PropEditor s={s} st={st} sc={sc} k={key} close={close} />}</Popover>
   const linkName = (id: string) => eventCode(s, id) || (nameOf(s, id).length > 22 ? nameOf(s, id).slice(0, 20) + '…' : nameOf(s, id)) || 'Missing'
   const on = Object.entries(sc.links).filter(([, v]) => v === 'on').map(([id]) => id), felt = Object.entries(sc.links).filter(([, v]) => v === 'felt').map(([id]) => id)
   const shown = new Set<string>(['status'])
-  const out: ReactNode[] = [chip('status', <><span className={'status-pill ' + status}>{STATUSES.find(x => x.id === status)!.label}</span><Icon name="down" size={10} /></>)]
+  const out: ReactNode[] = [chip('status', <><StatusPill st={status} /><Icon name="down" size={10} /></>)]
   const add = (key: PropKey, has: boolean, label: () => ReactNode) => { if (has) { shown.add(key); out.push(chip(key, label())) } }
   add('beat', !!sc.beat, () => <><span className="k">Beat</span>{sc.beat}</>)
   add('label', !!sc.label, () => <><i className="dot" style={{ background: labelColor(sc.label) }} />{labels[sc.label!] || sc.label}</>)
@@ -531,9 +559,10 @@ function PropEditor({ s, st, sc, k, close }: { s: State; st: Story; sc: Scene; k
   const edit = (fn: (x: Scene) => void) => update<'scene'>(sc.id, fn)
   const p = project(s), labels = p.labels || {}
   const [q, setQ] = useState('')
-  if (k === 'status') return <div className="ed-pedit" style={{ padding: 0 }}>{STATUSES.map(x => (
-    <button key={x.id} className={'menu-item' + ((sc.status || 'todo') === x.id ? ' on' : '')} onClick={() => { edit(y => { y.status = x.id as SceneStatus }); close() }}>
-      <span className={'status-pill ' + x.id}>{x.label}</span><span className="grow" />{(sc.status || 'todo') === x.id && <Icon name="check" size={14} />}</button>))}</div>
+  if (k === 'status') { const cur = statusOf(s, sc.status).id; return <div className="ed-pedit" style={{ padding: 0 }}>{statusesOf(s).map(x => (
+    <button key={x.id} className={'menu-item' + (cur === x.id ? ' on' : '')} onClick={() => { edit(y => { y.status = x.id }); close() }}>
+      <StatusPill st={x} /><span className="grow" />{cur === x.id && <Icon name="check" size={14} />}</button>))}
+    <div className="menu-sep" /><button className="menu-item" onClick={() => { close(); openSettings('labels') }}><span className="grow">Edit statuses…</span><span className="lbl">Settings</span></button></div> }
   if (k === 'beat') {
     const beats = [...new Set([...st.beats, sc.beat].filter(Boolean))]
     return <div className="ed-pedit">
@@ -551,7 +580,7 @@ function PropEditor({ s, st, sc, k, close }: { s: State; st: Story; sc: Scene; k
   </div>
   if (k === 'cast') return <div className="ed-pedit">
     <span className="lbl">Cast and setting</span>
-    {sc.cast.map(c => <div key={c} className="row nowrap"><a className="grow clip" href={'#world/' + c}>{nameOf(s, c) || 'Missing'}</a><button className="x" aria-label="Remove" onClick={() => edit(x => { x.cast = x.cast.filter(y => y !== c) })}>×</button></div>)}
+    {sc.cast.map(c => <div key={c} className="row nowrap"><a className="grow clip" href={'#world/' + c} title="Open. ⌥-click to open it beside this scene.">{nameOf(s, c) || 'Missing'}</a><button className="x" aria-label="Remove" onClick={() => edit(x => { x.cast = x.cast.filter(y => y !== c) })}>×</button></div>)}
     <input className="f" autoFocus value={q} placeholder="Add someone or somewhere" onChange={e => setQ(e.target.value)} />
     <div className="ed-pick">{typeIds(s).map(t => {
       const xs = entities(s, t).filter(e => !sc.cast.includes(e.id) && e.name.toLowerCase().includes(q.toLowerCase()))
@@ -561,7 +590,7 @@ function PropEditor({ s, st, sc, k, close }: { s: State; st: Story; sc: Scene; k
   if (k === 'shows') return <div className="ed-pedit" style={{ width: 340 }}>
     <span className="lbl">Events and facts this scene shows</span>
     {Object.entries(sc.links).map(([id, how]) => <div key={id} className="row nowrap">
-      <a className="grow clip" href={'#' + hrefOf(s, id)}>{nameOf(s, id) || 'Missing'}</a>
+      <a className="grow clip" href={'#' + hrefOf(s, id)} title="Open. ⌥-click to open it beside this scene.">{nameOf(s, id) || 'Missing'}</a>
       <div className="seg"><button className={how === 'on' ? 'on' : ''} title="Shown on the page" onClick={() => edit(x => { x.links[id] = 'on' })}>On the page</button><button className={how === 'felt' ? 'on' : ''} title="The effect, not the cause" onClick={() => edit(x => { x.links[id] = 'felt' })}>Felt</button></div>
       <button className="x" aria-label="Remove" onClick={() => edit(x => { delete x.links[id] })}>×</button></div>)}
     <RecordPicker s={s} kinds={['fact']} label="+ Event or fact" exclude={Object.keys(sc.links)} onPick={id => edit(x => { x.links[id] = 'on' })} />
@@ -615,7 +644,7 @@ function CardChanges({ s, sc, fill, onDone }: { s: State; sc: Scene; fill: CardF
 
 // ---------------- ⋯: lock, export, split, merge, history, delete ----------------
 
-function MoreMenu({ sc, next, caret, onHistory, onDelete }: { sc: Scene; next?: Scene; caret: React.RefObject<number>; onHistory: () => void; onDelete: () => void }) {
+function MoreMenu({ sc, next, caret, onHistory, onDelete, onFind }: { sc: Scene; next?: Scene; caret: React.RefObject<number>; onHistory: () => void; onDelete: () => void; onFind: () => void }) {
   const item = (close: () => void, label: string, hint: string, run: () => void, opts: { icon: string; disabled?: boolean; danger?: boolean; on?: boolean }) =>
     <button className={'assist-item ed-more-i' + (opts.danger ? ' danger' : '')} role="menuitem" disabled={opts.disabled} onClick={() => { close(); run() }}>
       <Icon name={opts.icon} size={15} /><span className="t"><b>{label}</b><span>{hint}</span></span>{opts.on && <Icon name="check" size={14} />}</button>
@@ -627,6 +656,10 @@ function MoreMenu({ sc, next, caret, onHistory, onDelete }: { sc: Scene; next?: 
         return <div className="assist-menu" role="menu" aria-label="Scene actions">
           {item(close, sc.pinned ? 'Unlock' : 'Lock', sc.pinned ? 'Locked: the assistant won’t redraft it' : 'The assistant won’t redraft a locked scene', () => tx(sc.pinned ? 'Unlock scene' : 'Lock scene', () => update<'scene'>(sc.id, x => { x.pinned = !x.pinned })), { icon: sc.pinned ? 'unlock' : 'lock' })}
           {item(close, 'Leave out of export', sc.exclude ? 'Skipped when you export' : 'Keep it in the project, skip it when you export', () => update<'scene'>(sc.id, x => { x.exclude = !x.exclude }), { icon: 'eye', on: !!sc.exclude })}
+          {item(close, 'Export this scene…', 'Word, PDF, EPUB and more, just this scene', () => exportSelection([sc.id]), { icon: 'upload' })}
+          <div className="menu-sep" />
+          {item(close, 'Find and replace…', `In this scene (${MOD}F)`, onFind, { icon: 'find' })}
+          {item(close, 'Open in the reference pane', 'Keep it beside you while you work elsewhere', () => openReference(sc.id), { icon: 'split' })}
           <div className="menu-sep" />
           {item(close, 'Split at the cursor', canSplit ? 'The text after the cursor becomes a new scene' : 'Put the cursor where the new scene should start', () => splitAt(sc, at), { icon: 'split', disabled: !canSplit })}
           {item(close, 'Merge with the next scene', next ? `Appends “${next.title || 'Untitled scene'}” to this one` : 'This is the last scene of the story', () => mergeNext(sc), { icon: 'merge', disabled: !next })}
@@ -690,14 +723,29 @@ function CompareDialog({ title, before, after, onClose }: { title: string; befor
   )
 }
 
-// ---------------- focus mode ----------------
+// ---------------- find and replace in the scene ----------------
 
-function Focus({ sc, editor, onExit }: { sc: Scene; editor: ReactNode; onExit: () => void }) {
-  useEffect(() => { const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onExit() }; addEventListener('keydown', esc); return () => removeEventListener('keydown', esc) }, [onExit])
+function FindBar({ find, n, i, inputRef, onChange, onStep, onReplace, onReplaceAll, onClose }: {
+  find: Find; n: number; i: number; inputRef: React.RefObject<HTMLInputElement | null>; onChange: (f: Find) => void; onStep: (d: number) => void
+  onReplace: () => void; onReplaceAll: () => void; onClose: () => void
+}) {
+  const keys = (e: React.KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose() } }
   return (
-    <div className="focus-mode">
-      <div className="focus-bar"><span>{plural(words(sc.prose), 'word')}</span><button className="btn sm" onClick={onExit}>Leave <kbd>esc</kbd></button></div>
-      <div className="doc"><h1>{sc.title}</h1>{editor}</div>
+    <div className="ed-find" role="search" aria-label="Find in this scene" onKeyDown={keys}>
+      <label className="ed-find-f"><Icon name="find" size={14} /><input ref={inputRef} value={find.q} placeholder="Find in this scene" aria-label="Find"
+        onChange={e => onChange({ ...find, q: e.target.value })} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); onStep(e.shiftKey ? -1 : 1) } }} />
+        <span className="ed-find-n">{find.q ? (n ? `${i + 1} of ${n}` : 'No matches') : ''}</span></label>
+      <button className="icon-btn sm" aria-label="Previous match" title="Previous (⇧↵)" disabled={!n} onClick={() => onStep(-1)}><Icon name="left" size={14} /></button>
+      <button className="icon-btn sm" aria-label="Next match" title="Next (↵)" disabled={!n} onClick={() => onStep(1)}><Icon name="right" size={14} /></button>
+      <button className={'ed-find-cs' + (find.cs ? ' on' : '')} aria-pressed={find.cs} title="Match case" onClick={() => onChange({ ...find, cs: !find.cs })}>Aa</button>
+      <span className="bar-sep" />
+      <label className="ed-find-f rep"><input value={find.rep} placeholder="Replace with" aria-label="Replace with" onChange={e => onChange({ ...find, rep: e.target.value })}
+        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); onReplace() } }} /></label>
+      <button className="btn sm" disabled={!n} onClick={onReplace}>Replace</button>
+      <button className="btn sm" disabled={!n} onClick={onReplaceAll}>All</button>
+      <span className="grow" />
+      <a className="small muted ed-find-all" href="#find" title={`Find and replace across the project (${MOD}⇧F)`}>Whole project…</a>
+      <button className="x" aria-label="Close find" onClick={onClose}>×</button>
     </div>
   )
 }

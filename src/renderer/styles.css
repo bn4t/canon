@@ -175,8 +175,8 @@ button.chip:hover, a.chip:hover { border-color: var(--line2) }
 .toast .x { color: inherit; opacity: .7 }
 
 /* ---------------- shell ---------------- */
-.shell { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr) auto; height: 100% }
-.shell.no-side { grid-template-columns: minmax(0, 1fr) auto }
+.shell { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr) auto auto; height: 100% }
+.shell.no-side { grid-template-columns: minmax(0, 1fr) auto auto }
 .main { min-width: 0; overflow-y: auto; position: relative; display: flex; flex-direction: column; background: var(--bg) }
 
 /* sidebar */
@@ -220,6 +220,33 @@ button.chip:hover, a.chip:hover { border-color: var(--line2) }
 .tree-scene.add { color: var(--faint); gap: 6px }
 .tree-scene.add:hover { color: var(--ink) }
 .tree-scene.drag-over { box-shadow: inset 0 2px 0 var(--accent) }
+/* the manuscript tree: parts and chapters, drop targets, the ⋯ menu on hover */
+.tree-wrap { position: relative; min-width: 0 }
+.tree-wrap > .tree-more { position: absolute; right: 3px; top: 4px; opacity: 0; transition: opacity .1s }
+.tree-wrap:hover > .tree-more, .tree-wrap:focus-within > .tree-more { opacity: 1 }
+.tree-wrap > .tree-more .icon-btn { width: 22px; height: 20px; background: var(--hover); color: var(--muted) }
+.tree-wrap > .tree-more .icon-btn:hover { background: var(--press); color: var(--ink) }
+.tree-wrap:hover > .tree-row small { visibility: hidden }
+.tree-sec { display: flex; align-items: center; gap: 2px; height: 28px; padding: 0 8px 0 0; border-radius: 7px; color: var(--ink); font-size: 13px }
+.tree-sec:hover { background: var(--hover) }
+.tree-sec.on { background: var(--panel); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line) }
+.tree-sec a { text-decoration: none; line-height: 28px; font-weight: 500 }
+.tree-sec a:hover { color: var(--accent-ink) }
+.tree-sec.part a { font: 600 10.5px/28px var(--f-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--muted) }
+.tree-sec small { color: var(--faint); font: 10.5px var(--f-mono); flex: none; margin-left: 8px }
+.tree-kids { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; padding: 1px 0 4px 12px }
+.tree-empty { padding: 3px 8px 6px 24px }
+.tree-rename { flex: 1; min-width: 0; height: 22px; padding: 0 6px; border: 1px solid var(--accent); border-radius: 5px; background: var(--panel); color: var(--ink); font: 500 13px var(--f-ui); outline: none }
+.tree-row.drop-into, .tree-scene.drop-into { background: var(--accent-tint); box-shadow: inset 0 0 0 1.5px var(--accent) }
+.tree-story.drag-over, .tree-sec.drag-over { box-shadow: inset 0 2px 0 var(--accent) }
+/* the ⋯ menu for stories, parts, chapters and scenes (ItemMenu) */
+.im { display: grid; min-width: 230px; max-width: 300px }
+.im-head { display: flex; align-items: center; gap: 6px; padding: 2px 4px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px }
+.im-h { display: block; padding: 8px 10px 2px }
+.im-part { font: 600 10.5px var(--f-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--muted) }
+.im-chap { padding-left: 10px }
+.im-confirm { padding: 8px 10px; gap: 10px; max-width: 290px }
+.im-confirm p { font-size: 13px; line-height: 1.45 }
 .side-foot { flex: none; padding: 8px 10px 10px; border-top: 1px solid var(--line); display: grid; gap: 4px }
 .save { font-size: 11px; color: var(--faint); padding-right: 4px; display: inline-flex; align-items: center; gap: 5px }
 .save::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); opacity: .7 }
@@ -358,6 +385,10 @@ table.mx { border-collapse: collapse; width: 100% }
 .assist-toggle kbd { margin-left: 2px }
 .assist-toggle.on { background: var(--accent-soft); color: var(--accent-ink) }
 .with-assistant .assist-toggle span, .with-assistant .assist-toggle kbd { display: none }
+/* The page header compacts by its own width, whatever narrows it (a side pane, the assistant, a small window). */
+.pagehead { container: pagehead / inline-size }
+@container pagehead (max-width: 940px) { .assist-toggle span, .assist-toggle kbd { display: none } }
+@container pagehead (max-width: 820px) { .crumbs .scene-of, .crumbs .tv-count { display: none } }
 .bar-sep { width: 1px; height: 20px; background: var(--line2); margin: 0 4px; flex: none }
 .tag { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; font: 600 10.5px/1 var(--f-ui); letter-spacing: .02em; text-transform: uppercase; flex: none }
 .tag.contradiction { background: var(--bad-soft); color: var(--bad) } .tag.hole { background: var(--warn-soft); color: var(--warn) } .tag.question { background: var(--accent-soft); color: var(--accent-ink) }

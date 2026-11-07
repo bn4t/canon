@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  project, stories, scenesOf, allScenes, list, get, nameOf, words, totalWords, sessionWords, today, openQuestions, undoRedo, STATUSES, QKINDS,
-  type State, type Scene, type SceneStatus,
+  project, stories, scenesOf, allScenes, list, get, nameOf, words, totalWords, sessionWords, today, openQuestions, undoRedo, statusesOf, statusOf, dailyGoal, QKINDS,
+  type State, type Scene, type StatusDef,
 } from '../store.ts'
 import { useAI, aiReady } from '../ai.ts'
 import { Bar, Icon, Spark, ago, openSettings, stored } from '../ui.tsx'
@@ -17,11 +17,13 @@ export const lastScene = (s: State): { sc?: Scene; at?: number } => {
     if (sc) return { sc, at: l.at }
   } catch { /* ignore */ }
   const all = allScenes(s)
-  return { sc: all.find(x => x.prose.trim() && x.status !== 'final') || all.find(x => x.prose.trim()) || all[0] }
+  const done = statusesOf(s).at(-1)?.id
+  return { sc: all.find(x => x.prose.trim() && statusOf(s, x.status).id !== done) || all.find(x => x.prose.trim()) || all[0] }
 }
 
-const STATUS_COLOR: Record<SceneStatus, string> = { final: 'var(--l-green)', revised: 'var(--l-blue)', draft: 'var(--l-yellow)', todo: 'var(--line2)' }
-const STATUS_WORD: Record<SceneStatus, string> = { final: 'final', revised: 'revised', draft: 'drafted', todo: 'to do' }
+/** How a status reads in "3 drafted · 2 final": the default statuses have their own words; a custom one is its name. */
+const DEFAULT_WORD: Record<string, string> = { 'Final': 'final', 'Revised': 'revised', 'First draft': 'drafted', 'To do': 'to do' }
+const statusWord = (x: StatusDef) => DEFAULT_WORD[x.label] ?? x.label.toLowerCase()
 const days = (a: string, b: string) => Math.round((new Date(b).getTime() - new Date(a).getTime()) / 864e5)
 
 export function HomeView({ s }: { s: State }) {
@@ -72,7 +74,7 @@ function PickUp({ s }: { s: State }) {
       <div className="home-ch"><span className="lbl grow">Pick up where you left off</span>{at && <span className="lbl light">opened {ago(at)}</span>}</div>
       <div>
         <div className="home-big-title">{sc.title || 'Untitled scene'}</div>
-        <div className="small muted">{st?.title} · scene {scs.indexOf(sc) + 1} of {scs.length} · {STATUSES.find(x => x.id === (sc.status || 'todo'))?.label} · {w.toLocaleString()}{sc.target ? ` of ${sc.target.toLocaleString()}` : ''} words</div>
+        <div className="small muted">{st?.title} · scene {scs.indexOf(sc) + 1} of {scs.length} · {statusOf(s, sc.status).label} · {w.toLocaleString()}{sc.target ? ` of ${sc.target.toLocaleString()}` : ''} words</div>
       </div>
       {excerpt ? <p className="home-ex">{excerpt}</p> : sc.card ? <p className="home-ex muted">{sc.card}</p> : null}
       <div className="row"><a className="btn pri" href={'#scene/' + sc.id}>{w ? 'Continue writing' : 'Start writing'}</a>{st && <a className="btn" href={'#story/' + st.id}>Open the outline</a>}</div>
@@ -89,11 +91,12 @@ function Today({ s }: { s: State }) {
   }, [s])
   const max = Math.max(1, ...hist.map(h => h.n))
   const left = p.deadline ? days(today(), p.deadline) : undefined
+  const goal = dailyGoal(s), fromDeadline = goal !== undefined && goal !== p.sessionTarget
   return (
     <section className="home-card">
-      <div className="home-ch"><h2 className="grow">Today</h2>{p.sessionTarget ? <span className="lbl light">goal {p.sessionTarget.toLocaleString()} words</span> : <button className="btn sm ghost" onClick={() => openSettings('goals')}>Set a daily goal</button>}</div>
-      <div className="row" style={{ alignItems: 'baseline', gap: 8 }}><span className="home-num">{n.toLocaleString()}</span><span className="muted">{p.sessionTarget ? `/ ${p.sessionTarget.toLocaleString()} words` : n === 1 ? 'word' : 'words'}</span></div>
-      {p.sessionTarget ? <div className="home-pb"><i style={{ width: Math.min(100, (n / p.sessionTarget) * 100) + '%' }} /></div> : null}
+      <div className="home-ch"><h2 className="grow">Today</h2>{goal ? <button className="lbl light home-goal" title={fromDeadline ? 'Worked out from your target and deadline. Change it in Settings.' : 'Change it in Settings'} onClick={() => openSettings('goals')}>goal {goal.toLocaleString()} words{fromDeadline ? ' · from the deadline' : ''}</button> : <button className="btn sm ghost" onClick={() => openSettings('goals')}>Set a daily goal</button>}</div>
+      <div className="row" style={{ alignItems: 'baseline', gap: 8 }}><span className="home-num">{n.toLocaleString()}</span><span className="muted">{goal ? `/ ${goal.toLocaleString()} words` : n === 1 ? 'word' : 'words'}</span></div>
+      {goal ? <div className="home-pb"><i style={{ width: Math.min(100, (n / goal) * 100) + '%' }} /></div> : null}
       <div className="home-spark" aria-label="Words per day, last 14 days">{hist.map((h, i) => <i key={h.d} title={`${h.d}: ${h.n.toLocaleString()} words`} className={i === hist.length - 1 ? 'today' : ''} style={{ height: h.n ? Math.max(6, (h.n / max) * 100) + '%' : '0%' }} />)}</div>
       <div className="row small muted"><span className="grow">Project {total.toLocaleString()}{p.target ? ` / ${p.target.toLocaleString()}` : ''} words</span>
         {left !== undefined && <span>{left < 0 ? `Due date passed ${-left} days ago` : `Due ${new Date(p.deadline!).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · ${left} days`}</span>}</div>
@@ -109,7 +112,8 @@ function Stories({ s }: { s: State }) {
       {sts.map(st => {
         const scs = scenesOf(s, st.id)
         const w = scs.reduce((n, sc) => n + words(sc.prose), 0)
-        const by = (['final', 'revised', 'draft', 'todo'] as SceneStatus[]).map(k => ({ k, n: scs.filter(x => (x.status || 'todo') === k).length })).filter(x => x.n)
+        // Furthest along first: the last status is the most finished.
+        const by = [...statusesOf(s)].reverse().map(x => ({ x, n: scs.filter(sc => statusOf(s, sc.status).id === x.id).length })).filter(x => x.n)
         const cards = scs.filter(x => x.card.trim()).length
         return (
           <a key={st.id} className="home-srow" href={'#story/' + st.id}>
@@ -118,8 +122,8 @@ function Stories({ s }: { s: State }) {
               <div className="small muted clip">{st.form === 'documents' ? 'In-world documents' : st.pov ? `POV ${nameOf(s, st.pov)}` : 'No POV set'} · {scs.length ? `${scs.length} scene${scs.length === 1 ? '' : 's'}` : 'no scenes yet'}</div>
             </div>
             <div className="stack" style={{ gap: 5 }}>
-              <div className="home-seg">{by.map(x => <span key={x.k} style={{ flex: x.n, background: STATUS_COLOR[x.k] }} />)}</div>
-              <span className="small muted home-sline">{!scs.length ? (st.premise.trim() ? 'Premise only' : 'Empty') : by.map(x => `${x.n} ${STATUS_WORD[x.k]}`).join(' · ') + (by.length === 1 && by[0].k === 'todo' && cards === scs.length ? ' · cards written' : '')}</span>
+              <div className="home-seg">{by.map(({ x, n }) => <span key={x.id} style={{ flex: n, background: x.color }} />)}</div>
+              <span className="small muted home-sline">{!scs.length ? (st.premise.trim() ? 'Premise only' : 'Empty') : by.map(({ x, n }) => `${n} ${statusWord(x)}`).join(' · ') + (by.length === 1 && by[0].x.id === statusesOf(s)[0]?.id && cards === scs.length ? ' · cards written' : '')}</span>
             </div>
             <div className="home-w">{w.toLocaleString()}{st.target ? ` / ${st.target.toLocaleString()}` : ''}</div>
           </a>

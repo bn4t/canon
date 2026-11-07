@@ -1,0 +1,38 @@
+/* The formatted prose field. The textarea's text is invisible; the copy behind it draws the text with its styling.
+   Rule: nothing here may change a glyph's advance or a line's height, or the caret drifts from the text.
+   So italics are synthesized from the upright face (this family declares no italic face, so the browser slants
+   the same glyphs at the same widths), and bold is a hairline shadow, not a heavier weight. */
+@font-face { font-family: 'Canon Prose'; font-style: normal; font-display: swap; font-weight: 200 800;
+  src: url(../../../node_modules/@fontsource-variable/newsreader/files/newsreader-latin-opsz-normal.woff2) format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD }
+@font-face { font-family: 'Canon Prose'; font-style: normal; font-display: swap; font-weight: 200 800;
+  src: url(../../../node_modules/@fontsource-variable/newsreader/files/newsreader-latin-ext-opsz-normal.woff2) format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF }
+@font-face { font-family: 'Canon Prose'; font-style: normal; font-display: swap; font-weight: 200 800;
+  src: url(../../../node_modules/@fontsource-variable/newsreader/files/newsreader-vietnamese-opsz-normal.woff2) format('woff2-variations');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB }
+
+.pf { position: relative; min-width: 0; --f-edit: 'Canon Prose', var(--f-prose) }
+.pf .pf-area { position: relative; z-index: 1; display: block; background: transparent; font-family: var(--f-edit); color: transparent; caret-color: var(--accent); font-synthesis: none }
+.pf .pf-area::selection { background: color-mix(in srgb, var(--accent) 24%, transparent); color: transparent }
+.pf .pf-area::placeholder { color: var(--faint) }
+.pf-back { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; color: var(--ink);
+  font: var(--prose-size)/1.72 var(--f-edit); font-optical-sizing: auto; white-space: pre-wrap; overflow-wrap: break-word; word-wrap: break-word; font-synthesis: style }
+.pf-back mark { color: inherit; background: none; border-radius: 2px; padding: 0 }
+
+/* the markup, quiet */
+.pf-back .md-em { font-style: italic }
+.pf-back .md-strong, .pf-back .md-h { text-shadow: .45px 0 0 currentColor }
+.pf-back .md-quote { color: var(--ink2) }
+.pf-back .md-break { color: var(--muted) }
+.pf-back .md-note { color: var(--accent-ink); background: var(--accent-tint); border-radius: 3px }
+.pf-back .md-mark { color: var(--faint); text-shadow: none; font-style: normal }
+
+/* read-only prose (reference pane, previews) */
+.pt { font: calc(var(--prose-size) - 2px)/1.65 var(--f-prose); color: var(--ink); display: grid; gap: .55em; user-select: text }
+.pt blockquote { margin: 0; padding-left: 1em; border-left: 2px solid var(--line2); color: var(--ink2) }
+.pt h4 { font: 600 1em/1.4 var(--f-prose) }
+.pt-break { text-align: center; color: var(--muted); letter-spacing: .3em }
+.pt-fn { font: 600 .65em/1 var(--f-ui); color: var(--accent-ink); margin-left: 1px; cursor: help }
+.pt-notes { font: 12.5px/1.5 var(--f-ui); color: var(--ink2); border-top: 1px solid var(--line); padding: 8px 0 0 18px; margin-top: 4px }
+.pt-empty { color: var(--faint); font: italic 15px/1.5 var(--f-prose) }

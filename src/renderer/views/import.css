@@ -1,0 +1,40 @@
+/* Import dialog: sources, then a preview of what the import becomes */
+.imp-overlay { place-items: center; padding: 24px 16px }
+/* (A flex column: the header, options and footer keep their height; the preview scrolls.) */
+.palette.imp { width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); display: flex; flex-direction: column; border-radius: 16px }
+.palette.imp > * { flex: none }
+.imp-h { display: flex; gap: 12px; align-items: flex-start; padding: 22px 22px 12px }
+.imp-h h2 { font: 400 24px/1.2 var(--f-prose); overflow-wrap: anywhere }
+.imp-h p { margin-top: 4px }
+.imp-b { padding: 4px 22px 22px; display: grid; gap: 12px }
+.imp-sources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px }
+.imp-sources .choice { padding: 16px }
+@media (max-width: 640px) { .imp-sources { grid-template-columns: 1fr } }
+.imp-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 12px; padding: 4px 22px 14px; border-bottom: 1px solid var(--line) }
+.imp-opts select.f { height: 34px; padding-top: 0; padding-bottom: 0 }
+.imp > .imp-preview { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 22px 16px; display: grid; gap: 10px; align-content: start; background: var(--sunk) }
+.imp-sum { font-size: 13px; color: var(--ink2) }
+.imp-sum span { color: var(--muted) }
+.imp-tree { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden }
+.imp-story + .imp-story { border-top: 1px solid var(--line) }
+.imp-row { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 3px 12px; font-size: 13px; min-width: 0 }
+.imp-row .icon { color: var(--faint); flex: none }
+.imp-row .dot { width: 7px; height: 7px; border-radius: 50%; flex: none }
+.imp-row.story { background: var(--accent-tint); border-bottom: 1px solid var(--line); min-height: 34px }
+.imp-row.story .icon { color: var(--accent) }
+.imp-row.story b { font: 500 15px/1.3 var(--f-prose) }
+.imp-row.part { font-weight: 600; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink2); padding-top: 8px }
+.imp-row.chapter { font-weight: 500; color: var(--ink) }
+.imp-row.scene { color: var(--ink2) }
+.imp-row.out .grow { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--line2) }
+.imp-w { flex: none; min-width: 64px; text-align: right; font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums }
+.imp-tag { flex: none; font-size: 10.5px; padding: 1px 6px; border-radius: 9px; background: var(--sunk); color: var(--muted); border: 1px solid var(--line) }
+.imp-more { padding: 8px 12px }
+.imp-also { list-style: none; display: grid; gap: 4px; color: var(--muted) }
+.imp-also li { display: flex; align-items: flex-start; gap: 8px }
+.imp-also li > span { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; row-gap: 2px }
+.imp-also .icon { color: var(--ok); flex: none; margin-top: 3px }
+.imp-lab { display: inline-flex; align-items: center; gap: 4px; color: var(--ink2) }
+.imp-lab + .imp-lab::before { content: "·"; color: var(--faint); margin-right: 2px }
+.imp-lab .dot { width: 8px; height: 8px; border-radius: 50% }
+.imp-f { display: flex; align-items: center; gap: 8px; padding: 12px 22px; border-top: 1px solid var(--line); background: var(--panel) }

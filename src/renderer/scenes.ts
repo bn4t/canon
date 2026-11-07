@@ -1,7 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import {
   update, create, remove, tx, get, list, getState, stories, scenesOf, nextOrder, showToast, applyProposal, isApplied, pushSnapshot, newScene, newNote, newQuestion,
-  type State, type Story, type Scene, type Proposal, type Severity, type Link,
+  flowOf, contentsOf, newSection, arrange, type State, type Story, type Scene, type Proposal, type Severity, type Link, type FlowItem, type Section,
 } from './store.ts'
 import { complete, completeJSON } from './ai.ts'
 import { buildScene, inputHash, directPassage, deriveCard, critiqueScene, continuityCheck } from './prompts.ts'
@@ -202,20 +202,122 @@ export function newStory() {
   tx('New story', () => { id = create('story', { title: 'Untitled story', order: nextOrder(stories(getState())), form: 'prose', premise: '', beats: [] }) })
   go('story/' + id)
 }
+/** A new scene at the end of a story (inside its last chapter), or at `order`. */
 export function addScene(st: Story, order?: number) {
   let id = ''
-  tx('New scene', () => { id = create('scene', newScene(st.id, order ?? nextOrder(scenesOf(getState(), st.id)), { cast: st.pov ? [st.pov] : [] })) })
+  tx('New scene', () => { id = create('scene', newScene(st.id, order ?? nextOrder(flowOf(getState(), st.id)), { cast: st.pov ? [st.pov] : [] })) })
   go('scene/' + id)
   return id
 }
+
+// ---------------- moving things in the manuscript ----------------
+// Sections and scenes share one order space per story, so every move renumbers the whole flow (1, 2, 3…) in one undo step.
+
+/** Write a story's flow back as 1..n, moving any item that came from another story into it. Call inside tx. */
+function renumber(story: string, items: FlowItem[]) {
+  items.forEach((x, i) => {
+    const cur = getState().recs[x.id] as FlowItem | undefined
+    if (cur && (cur.order !== i + 1 || cur.story !== story)) update<'scene'>(x.id, y => { y.order = i + 1; y.story = story })
+  })
+}
+/** moveItems without its own undo step, for combining a move with other changes inside one tx. */
+export function placeItems(ids: string[], story: string, beforeId?: string) {
+  const s = getState()
+  const moving = ids.map(id => s.recs[id] as FlowItem | undefined).filter((x): x is FlowItem => !!x && (x.kind === 'scene' || x.kind === 'section'))
+  if (!moving.length || moving.some(x => x.id === beforeId)) return false
+  const from = [...new Set(moving.map(x => x.story))].filter(x => x !== story)
+  renumber(story, arrange(flowOf(s, story), moving, beforeId))
+  for (const st of from) renumber(st, flowOf(getState(), st).filter(x => x.story === st))
+  return true
+}
+/** Move items (scenes and/or sections, kept in the given order) to just before `beforeId` in `story`, or to its end.
+ * Moving a section does not take its contents along: pass them too (sectionWithContents) to move a whole chapter. */
+export function moveItems(ids: string[], story: string, beforeId?: string, label = ids.length === 1 && get(getState(), ids[0], 'section') ? 'Move chapter' : ids.length === 1 ? 'Move scene' : 'Move scenes') {
+  const s = getState()
+  if (!ids.some(id => s.recs[id]) || ids.includes(beforeId!)) return
+  tx(label, () => { placeItems(ids, story, beforeId) })
+}
+/** A section and everything it contains, for moving it as a block. */
+export const sectionWithContents = (s: State, id: string) => [id, ...contentsOf(s, id).map(x => x.id)]
+/** Where "the end of this section" is: the flow item right after its contents (undefined: the end of the story). */
+export function afterSection(s: State, id: string): string | undefined {
+  const sec = get(s, id, 'section')
+  if (!sec) return
+  const flow = flowOf(s, sec.story), last = [sec, ...contentsOf(s, id)].pop()!
+  return flow[flow.findIndex(x => x.id === last.id) + 1]?.id
+}
+/** An `order` that sorts just before `beforeId` in a story's flow, or after everything. Halves the gap, so nothing else renumbers. */
+export function orderAt(s: State, story: string, beforeId?: string) {
+  const flow = flowOf(s, story), i = beforeId ? flow.findIndex(x => x.id === beforeId) : -1
+  if (i < 0) return nextOrder(flow)
+  return i === 0 ? flow[0].order - 1 : (flow[i - 1].order + flow[i].order) / 2
+}
+/** Where a scene put into a section goes: the id to place it before (undefined: the story's end).
+ * A part's own scenes sit before its first chapter; a chapter's go after its last scene. */
+export function intoSection(s: State, id: string) {
+  const sec = get(s, id, 'section')
+  const first = sec?.type === 'part' ? contentsOf(s, id).find(x => x.kind === 'section') : undefined
+  return first?.id ?? afterSection(s, id)
+}
+/** A new scene at the end of a chapter or part (before its next section), opened in the editor. */
+export function addSceneIn(sectionId: string) {
+  const s = getState(), sec = get(s, sectionId, 'section'), st = sec && get(s, sec.story, 'story')
+  if (!sec || !st) return
+  return addScene(st, orderAt(s, st.id, intoSection(s, sectionId)))
+}
+/** Turn a chapter into a part, or back. A part holds every chapter after it until the next part. */
+export function setSectionType(id: string, type: Section['type']) {
+  const sec = get(getState(), id, 'section')
+  if (sec && sec.type !== type) tx(`Make “${sec.title || 'Untitled'}” a ${type}`, () => update<'section'>(id, x => { x.type = type }))
+}
+/** Delete a section and everything in it (scenes, and a part's chapters), with the scenes' notes. One undo step. */
+export function deleteSection(id: string) {
+  const s = getState(), sec = get(s, id, 'section')
+  if (!sec) return
+  const inside = contentsOf(s, id), ids = new Set(inside.map(x => x.id))
+  const n = inside.filter(x => x.kind === 'scene').length
+  tx(`Delete ${sec.type} “${sec.title || 'Untitled'}”${n ? ` and ${n} scene${n === 1 ? '' : 's'}` : ''}`, () => {
+    for (const x of list(getState(), 'note')) if (ids.has(x.scene)) remove(x.id)
+    for (const x of inside) remove(x.id)
+    remove(id)
+  })
+}
+/** Reorder scenes: move `dragId` before `beforeId` (or to the end of its story). Sections stay where they are relative to other scenes. */
 export function reorder(scs: Scene[], dragId: string, beforeId?: string) {
-  const ids = scs.map(x => x.id).filter(x => x !== dragId)
-  const at = beforeId ? ids.indexOf(beforeId) : ids.length
-  ids.splice(at < 0 ? ids.length : at, 0, dragId)
-  tx('Reorder scenes', () => ids.forEach((id, i) => { if (get(getState(), id, 'scene')!.order !== i + 1) update<'scene'>(id, x => { x.order = i + 1 }) }))
+  const sc = scs.find(x => x.id === dragId) || get(getState(), dragId, 'scene')
+  if (sc) moveItems([dragId], get(getState(), beforeId, 'scene')?.story || sc.story, beforeId, 'Reorder scenes')
+}
+/** A new part or chapter heading before `beforeId` (or at the end of the story). Returns its id. */
+export function addSection(story: string, type: Section['type'] = 'chapter', beforeId?: string, patch: Partial<Section> = {}) {
+  const s = getState(), flow = flowOf(s, story)
+  const n = list(s, 'section').filter(x => x.story === story && x.type === type).length + 1
+  let id = ''
+  tx(type === 'part' ? 'New part' : 'New chapter', () => {
+    id = create('section', newSection(story, nextOrder(flow), { type, title: `${type === 'part' ? 'Part' : 'Chapter'} ${n}`, ...patch }))
+    const items = flow.filter(x => x.id !== id)
+    const at = beforeId ? items.findIndex(x => x.id === beforeId) : -1
+    items.splice(at < 0 ? items.length : at, 0, get(getState(), id, 'section')!)
+    renumber(story, items)
+  }, false)
+  return id
+}
+/** A new chapter at the end of a story, with an empty first scene, which opens. One undo step. */
+export function newChapter(st: Story) {
+  const s = getState(), n = list(s, 'section').filter(x => x.story === st.id && x.type === 'chapter').length + 1, o = nextOrder(flowOf(s, st.id))
+  let id = ''
+  tx('New chapter', () => {
+    create('section', newSection(st.id, o, { title: `Chapter ${n}` }))
+    id = create('scene', newScene(st.id, o + 1, { title: 'Untitled scene', cast: st.pov ? [st.pov] : [] }))
+  })
+  go('scene/' + id)
+}
+/** Remove a section heading. Its scenes stay where they are and join the section before it (or none). */
+export function removeSection(id: string) {
+  const sec = get(getState(), id, 'section')
+  if (sec) tx(`Remove ${sec.type} “${sec.title || 'Untitled'}”, keep its scenes`, () => remove(id))
 }
 export function splitAt(sc: Scene, at: number) {
-  const scs = scenesOf(getState(), sc.story), next = scs[scs.findIndex(x => x.id === sc.id) + 1]
+  const flow = flowOf(getState(), sc.story), next = flow[flow.findIndex(x => x.id === sc.id) + 1]
   let id = ''
   tx('Split scene', () => {
     id = create('scene', newScene(sc.story, next ? (sc.order + next.order) / 2 : sc.order + 1, { title: sc.title + ' (2)', cast: sc.cast, links: { ...sc.links }, prose: sc.prose.slice(at).trimStart(), status: sc.status, label: sc.label }))

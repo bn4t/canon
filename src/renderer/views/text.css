@@ -1,0 +1,50 @@
+/* The text view: a story, part or chapter as one manuscript. Headings read like the book; the scene dividers stay quiet. */
+.tv { display: flex; flex-direction: column; min-height: 100%; flex: 1 0 auto; min-width: 0 }
+.tv-count { color: var(--faint); font-size: 12.5px; margin-left: 6px; white-space: nowrap }
+.tv-page { flex: 1; padding: 24px 24px 22vh }
+.tv-page.tw { padding-bottom: 55vh }
+.tv-doc { max-width: var(--paper); margin: 0 auto; display: flex; flex-direction: column; min-width: 0 }
+.focus-doc .tv-doc { max-width: none; width: 100% }
+
+.tv-head { margin: 30px 0 8px; display: grid; gap: 10px }
+.tv-head h1 { font: 400 40px/1.15 var(--f-prose); letter-spacing: -.01em }
+.tv-head p { font: italic 400 16.5px/1.5 var(--f-prose); color: var(--ink2); user-select: text }
+
+/* part and chapter headings */
+.tv-sec { display: grid; justify-items: center; gap: 6px; text-align: center; margin: 64px 0 6px }
+.tv-sec.top { margin-top: 26px }
+.tv-sec-n { font: 600 11px/1 var(--f-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); text-decoration: none; border-radius: 4px; padding: 3px 5px }
+.tv-sec-n:hover { color: var(--accent-ink); background: var(--accent-tint) }
+.tv-sec-t { width: 100%; text-align: center; border: 0; outline: none; background: transparent; padding: 2px 0; color: var(--ink); border-radius: 6px;
+  font: 400 30px/1.2 var(--f-prose); letter-spacing: -.005em }
+.tv-sec.part .tv-sec-t { font-size: 36px }
+.tv-sec.part { margin-top: 88px; padding-bottom: 18px; border-bottom: 1px solid var(--line) }
+.tv-sec.part.top { margin-top: 26px }
+.tv-item:has(> .tv-sec.part) + .tv-item > .tv-sec.chapter { margin-top: 40px }
+.tv-sec-t::placeholder { color: var(--faint) }
+.tv-sec-t:hover { background: color-mix(in srgb, var(--hover) 55%, transparent) }
+.tv-sec-t:focus { background: transparent; box-shadow: 0 0 0 2px var(--accent-soft) }
+.tv-sec-syn { max-width: 52ch; font: italic 400 15px/1.5 var(--f-prose); color: var(--muted); user-select: text }
+
+/* one scene: a divider that opens the editor, then its text */
+.tv-scene { content-visibility: auto; contain-intrinsic-size: auto 360px }
+.tv-div { display: flex; align-items: center; gap: 8px; margin: 30px 0 12px; min-width: 0; font: 12px/1.4 var(--f-ui); color: var(--faint) }
+.tv-item:first-child > .tv-scene .tv-div, .tv-item:has(> .tv-sec) + .tv-item > .tv-scene .tv-div { margin-top: 22px }
+.tv-st { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 70%; color: var(--muted); text-decoration: none; padding: 2px 6px 2px 0; border-radius: 5px }
+.tv-st .dot { width: 7px; height: 7px }
+.tv-st:hover { color: var(--ink) }
+.tv-st:hover .clip { text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px }
+.tv-rule { flex: 1; height: 1px; background: var(--line); min-width: 16px }
+.tv-w { white-space: nowrap; font-variant-numeric: tabular-nums }
+.tv-tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--sunk); color: var(--muted); white-space: nowrap }
+.tv-scene.out .pf-back { opacity: .62 }
+.tv-pf .pf-area { min-height: calc(var(--prose-size) * 1.72 * 2) }
+.focus-mode .pf.tv-pf .pf-area { min-height: calc(var(--prose-size) * 1.72 * 2) }
+
+/* add a scene where a chapter ends */
+.tv-add { display: inline-flex; align-items: center; gap: 6px; margin: 16px 0 0; padding: 4px 10px 4px 8px; border: 1px dashed var(--line2); border-radius: 7px;
+  background: transparent; color: var(--muted); font: 500 12.5px/1.4 var(--f-ui); opacity: .7; transition: opacity .12s }
+.tv-add:hover { opacity: 1; color: var(--ink); border-style: solid; background: var(--hover) }
+.tv-item:hover > .tv-add, .tv-add:focus-visible { opacity: 1 }
+
+.tv-empty { display: grid; justify-items: start; gap: 14px; margin-top: 28px; color: var(--muted); font: 400 16px/1.55 var(--f-prose); max-width: 46ch }

@@ -1,0 +1,85 @@
+/* Research: a library on the left, the item on the right; files can be dropped anywhere on it */
+.rs { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); outline: none }
+.rs-list { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: color-mix(in srgb, var(--side) 55%, var(--bg)) }
+.rs-tools { display: grid; gap: 8px; padding: 12px 12px 8px }
+.rs-search { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 8px; background: var(--panel); color: var(--faint) }
+.rs-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft) }
+.rs-search input { border: 0; outline: none; background: transparent; flex: 1; min-width: 0; color: var(--ink) }
+.rs-filters { display: flex; flex-wrap: wrap; gap: 4px }
+.rs-filters .chip { gap: 5px; border: 0 }
+.rs-filters .chip .faint { font: 10.5px var(--f-mono) }
+.rs-group { justify-self: start }
+.rs-items { flex: 1; min-height: 0; overflow-y: auto; padding: 2px 8px 16px }
+.rs-grp { padding: 12px 6px 4px; font-size: 11.5px; font-weight: 500; color: var(--faint) }
+.rs-pad { padding: 10px 6px }
+.rs-row { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: 8px; text-decoration: none; color: var(--ink2) }
+.rs-row b { display: block; font-weight: 500; color: var(--ink) }
+.rs-row span.small { display: block; font-size: 11.5px }
+.rs-row:hover { background: var(--hover) }
+.rs-row.on { background: var(--panel); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line) }
+
+.rs-thumb { flex: none; display: grid; place-items: center; border-radius: 7px; background: var(--sunk); color: var(--muted); object-fit: cover; border: 1px solid var(--line) }
+.rs-thumb.pdf { background: var(--del-soft); color: var(--del) }
+.rs-thumb.web { background: var(--ins-soft); color: var(--ins) }
+.rs-thumb.note { background: var(--warn-soft); color: var(--warn) }
+.rs-thumb.audio, .rs-thumb.video { background: var(--accent-soft); color: var(--accent-ink) }
+
+.rs-detail { min-height: 0; overflow-y: auto; display: flex; flex-direction: column }
+.rs-intro { flex: 1 }
+.rs-intro > .icon { color: var(--faint) }
+.rs-item { width: min(900px, 100%); margin: 0 auto; padding: 24px 32px 48px; display: grid; gap: 14px; align-content: start }
+.rs-head { display: flex; gap: 14px; align-items: center }
+.rs-head .rs-thumb { border-radius: 10px }
+.rs-title { border: 0; outline: none; background: transparent; padding: 0; width: 100%; font: 400 26px/1.2 var(--f-prose); color: var(--ink); min-width: 0 }
+.rs-title:focus { background: var(--accent-tint); border-radius: 4px }
+.rs-title::placeholder { color: var(--faint) }
+.rs-actions { gap: 6px }
+.rs-about { gap: 6px }
+.rs-about > .lbl { margin-right: 2px }
+.rs-about .chip .x { font-size: 13px; padding: 0 2px; margin-right: -4px }
+.rs-note { width: 100%; min-height: 50vh; border: 0; outline: none; resize: none; background: transparent; font-size: var(--prose-size); line-height: 1.6; color: var(--ink); padding: 4px 0; field-sizing: content }
+.rs-note::placeholder { color: var(--faint) }
+.rs-notes textarea { min-height: 4.5em }
+
+/* the viewers */
+.rs-pdf { width: 100%; height: 76vh; border: 1px solid var(--line2); border-radius: 10px; background: var(--sunk) }
+.rs-pdf.compact { height: auto; flex: 1; min-height: 420px }
+.rs-img { border: 1px solid var(--line); border-radius: 10px; background: var(--sunk); display: grid; place-items: center; overflow: hidden; cursor: zoom-in; max-height: 72vh }
+.rs-img img { max-width: 100%; max-height: 72vh; object-fit: contain; display: block }
+.rs-img.zoom { place-items: start; overflow: auto; cursor: zoom-out }
+.rs-img.zoom img { max-width: none; max-height: none }
+.rs-img.compact, .rs-img.compact img { max-height: none }
+.rs-audio { width: 100% }
+.rs-video { width: 100%; max-height: 72vh; border-radius: 10px; background: #000 }
+.rs-clip { font-size: 17px; line-height: 1.6; color: var(--ink); display: grid; gap: .8em; max-width: 68ch; padding: 4px 0 }
+.rs-clip.compact { font-size: 15px }
+.rs-none { display: grid; justify-items: center; gap: 8px; padding: 32px 16px; border: 1px dashed var(--line2); border-radius: 10px; color: var(--muted); text-align: center }
+.rs-none .mono { word-break: break-all }
+
+/* dropping files */
+.rs-drop { position: absolute; inset: 8px; z-index: 6; display: grid; place-items: center; border: 2px dashed var(--accent); border-radius: 14px; background: color-mix(in srgb, var(--accent-tint) 88%, transparent); pointer-events: none; animation: fade .1s }
+.rs-drop > div { display: grid; justify-items: center; gap: 6px; color: var(--accent-ink); text-align: center }
+.rs-drop span { font-size: 12.5px; color: var(--muted) }
+
+/* in the reference pane */
+.rs-viewer { display: flex; flex-direction: column; gap: 12px; min-height: 100%; padding: 2px 0 }
+.rs-vtitle { display: block; font: 500 15px/1.3 var(--f-ui); text-decoration: none; color: var(--ink) }
+.rs-vtitle:hover { color: var(--accent-ink) }
+.rs-vnotes { display: grid; gap: 4px; font-size: 13px }
+
+/* on a World sheet */
+.rs-card.dropping { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft) }
+.rs-card .w-ch .btn { margin: -4px -6px -4px 0 }
+.rs-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px }
+.rs-thumbs a { display: block; aspect-ratio: 1; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: var(--sunk) }
+.rs-thumbs img { width: 100%; height: 100%; object-fit: cover; display: block }
+.rs-thumbs a:hover { border-color: var(--line2); box-shadow: var(--shadow-sm) }
+.w-pic { width: 56px; height: 56px; border-radius: 14px; object-fit: cover; flex: none; border: 1px solid var(--line) }
+
+/* pinned in the sidebar */
+.pins { padding-bottom: 2px }
+.tree-scene.pin .icon { color: var(--faint); flex: none }
+.tree-scene.pin.on .icon { color: var(--accent) }
+.tree-scene.pin .x { margin-right: -4px; font-size: 14px }
+.pin-end { height: 2px; margin: 0 8px; background: var(--accent); border-radius: 1px }
+@media (max-width: 1100px) { .rs { grid-template-columns: 250px minmax(0, 1fr) } .rs-item { padding: 20px 22px 40px } }

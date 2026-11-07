@@ -197,12 +197,15 @@ export const startInterview = (entityId: string) => dispatchEvent(new CustomEven
 
 // ---------------- the Settings window ----------------
 
-export type SettingsSection = 'details' | 'goals' | 'guides' | 'labels' | 'types' | 'assistant' | 'export' | 'appearance'
+export type SettingsSection = 'details' | 'book' | 'goals' | 'guides' | 'labels' | 'types' | 'assistant' | 'export' | 'backups' | 'appearance'
 let settingsOpen: SettingsSection | null = null
 const settingsSubs = new Set<() => void>()
 export function openSettings(section: SettingsSection = 'details') { settingsOpen = section; settingsSubs.forEach(f => f()) }
 export function closeSettings() { settingsOpen = null; settingsSubs.forEach(f => f()) }
 export const useSettingsSection = () => useSyncExternalStore(f => (settingsSubs.add(f), () => settingsSubs.delete(f)), () => settingsOpen)
+/** A labelled group inside a Settings section. */
+export const SettingsGroup = ({ label, children, aside }: { label: string; children: ReactNode; aside?: ReactNode }) =>
+  <section className="set-group"><div className="row"><span className="lbl grow">{label}</span>{aside}</div>{children}</section>
 
 // ---------------- appearance (per machine) ----------------
 
@@ -289,8 +292,9 @@ export function Md({ text }: { text: string }) {
 
 export const stored = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d } catch { return d } }
 export const store = (k: string, v: string) => { try { localStorage.setItem(k, v) } catch { /* private mode */ } }
-interface Chrome { sidebar: boolean; assistant: boolean }
-let chrome: Chrome = { sidebar: stored('canon.sidebar', '1') === '1', assistant: stored('canon.assistant', '0') === '1' }
+/** `reference`: what the reference pane (the split beside the main view) shows: a record id, '' for "pick something", null when closed. */
+interface Chrome { sidebar: boolean; assistant: boolean; reference: string | null }
+let chrome: Chrome = { sidebar: stored('canon.sidebar', '1') === '1', assistant: stored('canon.assistant', '0') === '1', reference: null }
 const chromeSubs = new Set<() => void>()
 export function setChrome(p: Partial<Chrome> | ((c: Chrome) => Partial<Chrome>)) {
   chrome = { ...chrome, ...(typeof p === 'function' ? p(chrome) : p) }
@@ -298,6 +302,9 @@ export function setChrome(p: Partial<Chrome> | ((c: Chrome) => Partial<Chrome>))
   chromeSubs.forEach(f => f())
 }
 export const useChrome = () => useSyncExternalStore(f => (chromeSubs.add(f), () => chromeSubs.delete(f)), () => chrome)
+/** Open a record (scene, section, entity, fact, research item) in the reference pane beside the main view; '' opens the picker. */
+export const openReference = (id = '') => setChrome({ reference: id })
+export const closeReference = () => setChrome({ reference: null })
 export const isMac = /Mac/.test(navigator.platform)
 
 /** After a file was saved through the shell: say where, with a way to see it. */
@@ -337,6 +344,7 @@ export const Diff = ({ parts }: { parts: Part[] }) => <>{parts.map((p, i) => p.t
 const ICONS: Record<string, string> = {
   write: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',
   board: 'M4 5h6v6H4zM14 5h6v6h-6zM4 15h6v4H4zM14 15h6v4h-6z',
+  research: 'M5 4h9l5 5v11H5zM14 4v5h5M8.5 13h7M8.5 16.5h5',
   world: 'M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16',
   timeline: 'M3 12h18M7 8v8M12 6v12M17 9v6',
   questions: 'M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5M12 16.5v.5',
@@ -358,6 +366,7 @@ const ICONS: Record<string, string> = {
   check: 'M5 12.5l4.5 4.5L19 7.5',
   history: 'M4 12a8 8 0 1 0 2.4-5.7M4 4v4h4M12 8v4l3 2',
   import: 'M12 4v11M7 10l5 5 5-5M5 20h14',
+  folder: 'M4 6h6l2 2h8v11H4z',
   upload: 'M12 20V9M7 14l5-5 5 5M5 4h14',
   collection: 'M4 7h16M7 4h10M5 10h14v10H5z',
   replace: 'M4 6h10M4 11h7M4 16h5M14 13l3-3 3 3M17 10v10',
@@ -371,10 +380,20 @@ const ICONS: Record<string, string> = {
   sliders: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
   trash: 'M5 7h14M10 4h4M7 7l1 13h8l1-13',
   split: 'M4 12h16M12 4v5M12 15v5',
+  swap: 'M5 8h13l-3.5-3.5M19 16H6l3.5 3.5',
+  pane: 'M4 5h16v14H4zM14 5v14',
   merge: 'M7 4v5l5 4 5-4V4M12 13v7',
   copy: 'M8 8h11v12H8zM5 16V4h11',
   eye: 'M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12zM12 9.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5',
   drag: 'M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01',
+  pin: 'M9 4h6M10 4v5.5L7 13h10l-3-3.5V4M12 13v7',
+  image: 'M4 5h16v14H4zM4 16l5-5 4 4 2-2 5 5M15.5 9a1 1 0 1 0 0 .01',
+  web: 'M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M4 12h16M12 4c2.5 2.5 3 5.5 3 8s-.5 5.5-3 8M12 4c-2.5 2.5-3 5.5-3 8s.5 5.5 3 8',
+  audio: 'M9 18V6l11-2v12M9 18a3 3 0 1 1-6 0a3 3 0 1 1 6 0M20 16a3 3 0 1 1-6 0a3 3 0 1 1 6 0',
+  video: 'M4 6h11v12H4zM15 10l5-3v10l-5-3',
+  pdf: 'M6 3h9l4 4v14H6zM15 3v4h4M9 13h6M9 16.5h4',
+  note: 'M5 4h14v12l-4 4H5zM14 20v-4h5M8.5 9h7M8.5 12.5h5',
+  external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
 }
 export const Icon = ({ name, size = 16 }: { name: keyof typeof ICONS | string; size?: number }) =>
   <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={name === 'more' || name === 'drag' ? 3 : 1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={ICONS[name]} /></svg>

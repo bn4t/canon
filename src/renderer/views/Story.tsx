@@ -1,22 +1,34 @@
 import './outline.css'
-import { useRef, useState, type ReactNode } from 'react'
+import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   update, create, remove, tx, get, getState, list, stories, scenesOf, entities, words, project, nameOf, guidesFor, matchScenes, showToast, applyProposal, typeIds, typeDef,
-  eventCode, newScene, newQuestion, STATUSES, LABELS, type State, type Story, type Scene, type Proposal, type GuideKind, type Filter, type SceneStatus, type Link,
+  eventCode, newScene, newQuestion, newSection, nextOrder, LABELS, statusesOf, statusOf, sectionsOf, flowOf, treeOf, contentsOf, scenesIn, chapterOf,
+  type State, type Story, type Scene, type Section, type Proposal, type GuideKind, type Filter, type SceneStatus, type Link, type Collection,
 } from '../store.ts'
 import { completeJSON, useAI, aiReady, modelFor, providerName } from '../ai.ts'
 import { deriveCard, findProblems, normalizeProposal, type FoundQ } from '../prompts.ts'
 import { suggestScenesByBeat } from '../outlinePrompts.ts'
 import { Popover, useJob, JobStatus, go, Bar, Icon, Spark, ConnectPrompt, ProposedChanges, AssistMenu, openSettings, stored, store } from '../ui.tsx'
 import { RecordPicker, GuideRow } from './shared.tsx'
-import { useHashes, builtState, BUILT, buildOne, continuity } from '../scenes.ts'
+import { useHashes, builtState, BUILT, buildOne, continuity, placeItems, moveItems, afterSection, intoSection, orderAt, addScene, addSceneIn, addSection, sectionWithContents } from '../scenes.ts'
+import { ItemMenu, toggleInCollection } from './ItemMenu.tsx'
 
 type Mode = 'board' | 'list'
-type Group = 'beat' | 'status' | 'label' | 'order'
-const GROUPS: { id: Group; label: string }[] = [{ id: 'beat', label: 'Beat' }, { id: 'status', label: 'Status' }, { id: 'label', label: 'Label' }, { id: 'order', label: 'Story order' }]
+type Group = 'chapter' | 'beat' | 'status' | 'label' | 'order'
+const GROUPS: { id: Group; label: string }[] = [{ id: 'chapter', label: 'Chapter' }, { id: 'beat', label: 'Beat' }, { id: 'status', label: 'Status' }, { id: 'label', label: 'Label' }, { id: 'order', label: 'Story order' }]
 const excerpt = (sc: Scene) => sc.prose.trim().replace(/\s+/g, ' ').slice(0, 200)
 const labelColor = (l?: string) => (l ? `var(--l-${l})` : 'transparent')
-const statusOf = (sc: Scene) => STATUSES.find(x => x.id === (sc.status || 'todo'))!
+/** A scene's status as a pill in the status's colour (grey stays the quiet default). */
+export function StatusPill({ s, id }: { s: State; id?: string }) {
+  const st = statusOf(s, id), grey = !st.color || st.color === 'var(--line2)'
+  return <span className={'ol-pill' + (grey ? '' : ' tint')} style={grey ? undefined : { '--c': st.color } as CSSProperties}>{st.label}</span>
+}
+/** The ⋯ menu for a scene or heading inside a clickable card or row: opening it neither follows the link nor opens the row. */
+function MoreMenu({ s, id, label, onRename, onCreated, className = '' }: { s: State; id: string; label: string; onRename?: () => void; onCreated?: (id: string) => void; className?: string }) {
+  return <Popover className={'right ' + className} trigger={o => <button className="icon-btn sm ol-more" aria-label={label} title={label} onClick={e => { e.preventDefault(); e.stopPropagation(); o() }}><Icon name="more" size={14} /></button>}>
+    {close => <div onClick={e => e.stopPropagation()}><ItemMenu s={s} id={id} close={close} onRename={onRename} onCreated={onCreated} /></div>}
+  </Popover>
+}
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`
 const openNotes = (s: State) => { const m: Record<string, number> = {}; for (const n of list(s, 'note')) if (!n.done) m[n.scene] = (m[n.scene] || 0) + 1; return m }
 const listNames = (scs: Scene[]) => scs.length <= 2 ? scs.map(x => x.title).join(' and ') : `${scs.slice(0, 2).map(x => x.title).join(', ')} and ${scs.length - 2} more`
@@ -47,8 +59,12 @@ export function StoryView({ s, storyId }: { s: State; storyId: string }) {
   const scs = scenesOf(s, storyId)
   const [mode, setMode] = useState<Mode>(() => (stored('canon.outline.' + storyId, 'board') === 'list' ? 'list' : 'board'))
   const pick = (m: Mode) => { setMode(m); store('canon.outline.' + storyId, m) }
-  const [group, setGroup] = useState<Group>(() => (stored('canon.outline.group', 'beat') as Group))
-  const pickGroup = (g: Group) => { setGroup(g); store('canon.outline.group', g) }
+  // Each story keeps its own grouping; a story with chapters opens on its chapters.
+  const [group, setGroup] = useState<Group>(() => (stored('canon.outline.group.' + storyId, sectionsOf(s, storyId).length ? 'chapter' : stored('canon.outline.group', 'beat')) as Group))
+  const pickGroup = (g: Group) => { setGroup(g); store('canon.outline.group.' + storyId, g); if (g !== 'chapter') store('canon.outline.group', g) }
+  /** A heading just added here: its title field takes focus. */
+  const [fresh, setFresh] = useState<string>()
+  const newChapter = () => setFresh(addSection(storyId, 'chapter'))
   const [details, setDetails] = useState(() => !scs.length && !st.premise.trim())
   const [cols, setCols] = useState<string[]>(() => stored('canon.outline.cols', 'beat,status,card,words,cast').split(','))
   const hashes = useHashes(s, storyId)
@@ -121,10 +137,12 @@ export function StoryView({ s, storyId }: { s: State; storyId: string }) {
     <>
       <Bar>
         <div className="ol-crumb grow"><b className="clip">{st.title || 'Untitled story'}</b><span className="lbl">Outline</span></div>
-        <div className="seg" role="tablist" aria-label="View">{(['board', 'list'] as Mode[]).map(m => <button key={m} role="tab" aria-selected={mode === m} onClick={() => pick(m)}>{m === 'board' ? 'Board' : 'List'}</button>)}</div>
+        <div className="seg" role="tablist" aria-label="View">{(['board', 'list'] as Mode[]).map(m => <button key={m} role="tab" aria-selected={mode === m} onClick={() => pick(m)}>{m === 'board' ? 'Board' : 'List'}</button>)}
+          <button role="tab" aria-selected={false} title="Read and edit the whole story as one text" onClick={() => go('text/' + storyId)}>Text</button></div>
         <span className="bar-sep" />
         <OutlineAssist st={st} items={items} busy={job.busy} />
-        <button className="btn sm" onClick={() => addIn(st, scs, group, '')}><Icon name="plus" size={14} />Scene</button>
+        <button className="btn sm" title="A new scene at the end of the story" onClick={() => (mode === 'list' || group === 'chapter' ? addScene(st) : addIn(st, scs, group, ''))}><Icon name="plus" size={14} />Scene</button>
+        <button className="btn sm" title="A new chapter heading at the end of the story" onClick={newChapter}><Icon name="plus" size={14} />Chapter</button>
         <span className="bar-sep" />
       </Bar>
       <div className="ol">
@@ -133,9 +151,9 @@ export function StoryView({ s, storyId }: { s: State; storyId: string }) {
         {(job.busy || job.err) && <div className="ol-pad"><JobStatus job={job} /></div>}
         {cards.length > 0 && <div className="ol-pad"><ProposedChanges s={s} items={cards} onChange={setCards} title="Proposed cards" onApplied={linkAlong}
           note="Cast and events the text mentions are added with each card you apply." /></div>}
-        {!scs.length && !ghostsHere.length ? <EmptyOutline st={st} onSuggest={suggest} busy={!!job.busy} />
-          : mode === 'board' ? <Board s={s} st={st} scs={scs} hashes={hashes} group={group} ghosts={ghostsHere} setGhosts={g => setGhosts(all => [...all.filter(x => !ghostsHere.includes(x)), ...g])} />
-            : <ListTable s={s} scs={scs} hashes={hashes} cols={cols} reorderable />}
+        {!scs.length && !ghostsHere.length && !sectionsOf(s, storyId).length ? <EmptyOutline st={st} onSuggest={suggest} busy={!!job.busy} />
+          : mode === 'board' ? <Board s={s} st={st} scs={scs} hashes={hashes} group={group} ghosts={ghostsHere} setGhosts={g => setGhosts(all => [...all.filter(x => !ghostsHere.includes(x)), ...g])} fresh={fresh} setFresh={setFresh} />
+            : <ListTable s={s} scs={scs} hashes={hashes} cols={cols} story={st} fresh={fresh} setFresh={setFresh} />}
       </div>
     </>
   )
@@ -184,7 +202,7 @@ function Head({ s, st, scs, details, setDetails, mode, group, pickGroup, cols, s
         {mode === 'board'
           ? <Popover className="right" trigger={o => <button className="ol-chip" onClick={o}>{GROUPS.find(g => g.id === group)!.label}<Icon name="down" size={12} /></button>}>{close => <>
             <span className="lbl ol-pick-h">Group cards by</span>
-            {GROUPS.map(g => <button key={g.id} className={'menu-item' + (group === g.id ? ' on' : '')} onClick={() => { pickGroup(g.id); close() }}>{g.label}{g.id === 'beat' && !st.beats.filter(Boolean).length ? <span className="small muted">· no beats yet</span> : null}</button>)}
+            {GROUPS.map(g => <button key={g.id} className={'menu-item' + (group === g.id ? ' on' : '')} onClick={() => { pickGroup(g.id); close() }}>{g.label}{g.id === 'beat' && !st.beats.filter(Boolean).length ? <span className="small muted">· no beats yet</span> : g.id === 'chapter' && !sectionsOf(s, st.id).length ? <span className="small muted">· no chapters yet</span> : null}</button>)}
           </>}</Popover>
           : <ColumnPicker s={s} cols={cols} setCols={setCols} />}
       </div>
@@ -242,7 +260,15 @@ function Details({ s, st, scs, onClose }: { s: State; st: Story; scs: Scene[]; o
       </div>
       <div className="ol-details-f">
         <span className="small muted grow">{plural(scs.length, 'scene')} · story {stories(s).indexOf(st) + 1} of {stories(s).length} in the project</span>
-        <button className="btn sm ghost danger" onClick={() => { tx(`Delete story “${st.title}” and ${plural(scs.length, 'scene')}`, () => { scs.forEach(x => remove(x.id)); remove(st.id) }); go('home') }}><Icon name="trash" size={14} />Delete story</button>
+        <button className="btn sm ghost danger" onClick={() => {
+          tx(`Delete story “${st.title}” and ${plural(scs.length, 'scene')}`, () => {
+            const ids = new Set(scs.map(x => x.id))
+            for (const n of list(getState(), 'note')) if (ids.has(n.scene)) remove(n.id)
+            for (const x of [...sectionsOf(getState(), st.id), ...scs]) remove(x.id)
+            remove(st.id)
+          })
+          go('home')
+        }}><Icon name="trash" size={14} />Delete story</button>
       </div>
     </section>
   )
@@ -267,52 +293,85 @@ function EmptyOutline({ st, onSuggest, busy }: { st: Story; onSuggest: () => voi
 
 // ---------------- the board ----------------
 
-const keyOf = (sc: Scene, g: Group, st?: Story) => g === 'beat' ? (st?.beats.includes(sc.beat) && sc.beat ? sc.beat : '') : g === 'status' ? (sc.status || 'todo') : g === 'label' ? (sc.label || '') : ''
-interface Column { key: string; name: string; color?: string }
+const keyOf = (s: State, sc: Scene, g: Group, st?: Story) => g === 'beat' ? (st?.beats.includes(sc.beat) && sc.beat ? sc.beat : '') : g === 'status' ? statusOf(s, sc.status).id : g === 'label' ? (sc.label || '') : ''
+/** A board column. In chapter columns `key` is the heading's id ('' for scenes before the first heading) and `items` its scenes. */
+interface Column { key: string; name: string; color?: string; sec?: Section; part?: Section; items?: Scene[] }
 function columns(s: State, st: Story, scs: Scene[], g: Group): Column[] {
-  if (g === 'status') return STATUSES.map(x => ({ key: x.id, name: x.label }))
+  if (g === 'chapter') return chapterColumns(s, st)
+  if (g === 'status') return statusesOf(s).map(x => ({ key: x.id, name: x.label, color: x.color }))
   if (g === 'label') {
     const names = project(s).labels || {}
     return [...LABELS.filter(l => names[l] || scs.some(x => x.label === l)).map(l => ({ key: l, name: names[l] || l[0].toUpperCase() + l.slice(1), color: `var(--l-${l})` })), { key: '', name: 'No label' }]
   }
   if (g === 'beat') {
     const bs = [...new Set(st.beats.filter(Boolean))].map(b => ({ key: b, name: b }))
-    return !bs.length || scs.some(x => !keyOf(x, 'beat', st)) ? [...bs, { key: '', name: 'No beat' }] : bs
+    return !bs.length || scs.some(x => !keyOf(s, x, 'beat', st)) ? [...bs, { key: '', name: 'No beat' }] : bs
   }
   return [{ key: '', name: '' }]
 }
-
-/** Move a scene before another (or to the end of a column), taking the column's beat, status or label. One undo step. */
-function moveScene(st: Story, scs: Scene[], g: Group, cols: Column[], id: string, key: string, before?: string) {
-  const rest = scs.filter(x => x.id !== id)
-  const col = (sc: Scene) => cols.findIndex(c => c.key === keyOf(sc, g, st))
-  let at = before ? rest.findIndex(x => x.id === before) : -1
-  if (at < 0) {
-    const ci = cols.findIndex(c => c.key === key)
-    const inCol = g === 'order' ? rest : rest.filter(x => keyOf(x, g, st) === key)
-    at = inCol.length ? rest.indexOf(inCol[inCol.length - 1]) + 1 : g === 'beat' ? (i => (i < 0 ? rest.length : i))(rest.findIndex(x => col(x) > ci)) : rest.length
+/** One column per chapter, in reading order. A part with scenes of its own (before its first chapter), or with no chapters yet, gets a column too. */
+function chapterColumns(s: State, st: Story): Column[] {
+  const tree = treeOf(s, st.id), out: Column[] = [], any = tree.kids.length > 0
+  if (tree.scenes.length || !any) out.push({ key: '', name: any ? 'Before the first chapter' : 'Scenes', items: tree.scenes })
+  for (const k of tree.kids) {
+    const sec = k.sec!
+    if (sec.type !== 'part') { out.push({ key: sec.id, name: sec.title || 'Untitled chapter', sec, items: k.scenes }); continue }
+    if (k.scenes.length || !k.kids.length) out.push({ key: sec.id, name: k.kids.length ? 'Before its first chapter' : 'No chapters yet', sec, part: sec, items: k.scenes })
+    for (const c of k.kids) out.push({ key: c.sec!.id, name: c.sec!.title || 'Untitled chapter', sec: c.sec, part: sec, items: c.scenes })
   }
-  const ids = rest.map(x => x.id)
-  ids.splice(at, 0, id)
-  const sc = scs.find(x => x.id === id)!
-  const patch = g === 'order' || keyOf(sc, g, st) === key ? null : g
-  tx(patch ? `Move “${sc.title}” to ${cols.find(c => c.key === key)?.name}` : 'Reorder scenes', () => {
+  return out
+}
+/** Where a scene dropped at the end of a chapter column goes (the id to place it before). */
+const columnEnd = (s: State, st: Story, c?: Column) => !c ? undefined : c.sec ? intoSection(s, c.sec.id) : flowOf(s, st.id).find(x => x.kind === 'section')?.id
+
+/** Move a scene before another (or to the end of a column), taking the column's beat, status or label; in chapter columns it joins
+ * the chapter. Sections stay put, so a scene keeps its chapter unless it is moved into another. One undo step. */
+function moveScene(st: Story, scs: Scene[], g: Group, cols: Column[], id: string, key: string, before?: string) {
+  const s = getState(), sc = get(s, id, 'scene')
+  if (!sc || id === before) return
+  const flow = flowOf(s, st.id).filter(x => x.id !== id)
+  let target = before
+  if (!target && g === 'chapter') target = columnEnd(s, st, cols.find(c => c.key === key))
+  else if (!target) {
+    // The end of a column: right after its last scene (so it stays in that scene's chapter), else before the first scene of a later beat.
+    const rest = scs.filter(x => x.id !== id), inCol = g === 'order' ? rest : rest.filter(x => keyOf(s, x, g, st) === key)
+    const last = inCol[inCol.length - 1], ci = cols.findIndex(c => c.key === key)
+    target = last ? flow[flow.findIndex(x => x.id === last.id) + 1]?.id : g === 'beat' ? rest.find(x => cols.findIndex(c => c.key === keyOf(s, x, 'beat', st)) > ci)?.id : undefined
+  }
+  const from = g === 'chapter' ? cols.find(c => c.items?.some(x => x.id === id))?.key : keyOf(s, sc, g, st)
+  const patch = g === 'chapter' || g === 'order' || from === key ? null : g
+  const name = cols.find(c => c.key === key)?.name
+  tx(from !== key && g !== 'order' ? `Move “${sc.title || 'Untitled scene'}” to ${g === 'chapter' && key ? `“${name}”` : name}` : 'Reorder scenes', () => {
     if (patch === 'beat') update<'scene'>(id, x => { x.beat = key })
     if (patch === 'status') update<'scene'>(id, x => { x.status = key as SceneStatus })
     if (patch === 'label') update<'scene'>(id, x => { x.label = key || undefined })
-    ids.forEach((x, i) => { if (get(getState(), x, 'scene')!.order !== i + 1) update<'scene'>(x, y => { y.order = i + 1 }) })
+    placeItems([id], st.id, target)
   })
 }
 
-/** A new scene at the end of a column, carrying the column's beat, status or label; opens it in the editor. */
+/** A new scene at the end of a column, carrying the column's beat, status or label (or inside its chapter); opens it in the editor. */
 function addIn(st: Story, scs: Scene[], g: Group, key: string) {
-  const inCol = g === 'order' ? scs : scs.filter(x => keyOf(x, g, st) === key)
-  const last = inCol[inCol.length - 1], next = last ? scs[scs.indexOf(last) + 1] : undefined
-  const order = !last ? (scs.length ? scs[scs.length - 1].order + 1 : 1) : next ? (last.order + next.order) / 2 : last.order + 1
+  const s = getState()
+  if (g === 'chapter') return key ? addSceneIn(key) : addScene(st, orderAt(s, st.id, columnEnd(s, st, { key, name: '' })))
+  const flow = flowOf(s, st.id)
+  const inCol = g === 'order' ? scs : scs.filter(x => keyOf(s, x, g, st) === key), last = inCol[inCol.length - 1]
+  const order = orderAt(s, st.id, last ? flow[flow.findIndex(x => x.id === last.id) + 1]?.id : undefined)
   const patch = g === 'beat' ? { beat: key } : g === 'status' ? { status: key as SceneStatus } : g === 'label' && key ? { label: key } : {}
   let id = ''
   tx('New scene', () => { id = create('scene', newScene(st.id, order, { cast: st.pov ? [st.pov] : [], ...patch })) })
   go('scene/' + id)
+}
+/** Drop a scene on "+ Chapter": a new chapter at the end of the story, starting with that scene. One undo step. */
+function chapterFrom(st: Story, id: string) {
+  const s = getState(), sc = get(s, id, 'scene')
+  if (!sc) return
+  const n = sectionsOf(s, st.id).filter(x => x.type === 'chapter').length + 1
+  let sec = ''
+  tx(`Start a new chapter with “${sc.title || 'Untitled scene'}”`, () => {
+    sec = create('section', newSection(st.id, nextOrder(flowOf(getState(), st.id)), { title: `Chapter ${n}` }))
+    placeItems([id], st.id)
+  })
+  return sec
 }
 
 function useMove(onDrop: (id: string, key: string, before?: string) => void) {
@@ -324,67 +383,165 @@ function useMove(onDrop: (id: string, key: string, before?: string) => void) {
     draggable: true,
     onDragStart: (e: React.DragEvent) => { drag.current = id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', id) },
     onDragOver: (e: React.DragEvent) => { if (drag.current) { e.preventDefault(); e.stopPropagation(); setOver(id) } },
-    onDrop: (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); drop(key, id) },
+    onDrop: (e: React.DragEvent) => { if (!drag.current) return; e.preventDefault(); e.stopPropagation(); drop(key, id) },
     onDragEnd: end,
   })
   const col = (key: string) => ({
     onDragOver: (e: React.DragEvent) => { if (drag.current) { e.preventDefault(); setOver('col:' + key) } },
-    onDrop: (e: React.DragEvent) => { e.preventDefault(); drop(key) },
+    onDrop: (e: React.DragEvent) => { if (!drag.current) return; e.preventDefault(); drop(key) },
   })
-  return { card, col, over, dragging: () => !!drag.current }
+  return { card, col, over, setOver, drag, end }
 }
 
-function Board({ s, st, scs, hashes, group, ghosts, setGhosts }: { s: State; st: Story; scs: Scene[]; hashes: Record<string, string>; group: Group; ghosts: Proposal[]; setGhosts: (g: Proposal[]) => void }) {
+/** Dragging a chapter by its column's grip: before another chapter, into a part, or to the end of the story (onto "+ Chapter"). */
+function useChapterMove(st: Story) {
+  const drag = useRef<string>(undefined)
+  const [over, setOver] = useState<string>()
+  const end = () => { drag.current = undefined; setOver(undefined) }
+  const takes = (c?: Column) => !!drag.current && (!c || (!!c.sec && c.key !== drag.current))
+  const drop = (c?: Column) => {
+    const id = drag.current, s = getState(), sec = id ? get(s, id, 'section') : undefined
+    end()
+    if (!sec) return
+    const ids = sectionWithContents(s, sec.id), label = `Move “${sec.title || 'Untitled chapter'}”`
+    if (!c) return moveItems(ids, st.id, undefined, label + ' to the end')
+    if (c.sec!.type === 'part') return moveItems(ids, st.id, contentsOf(s, c.sec!.id).find(x => x.kind === 'section')?.id ?? afterSection(s, c.sec!.id), `${label} into “${c.sec!.title || 'Untitled part'}”`)
+    moveItems(ids, st.id, c.sec!.id, label)
+  }
+  const grip = (id: string) => ({
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      drag.current = id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', id)
+      const head = (e.currentTarget as HTMLElement).closest('.ol-colh'); if (head) e.dataTransfer.setDragImage(head, 16, 14)
+    },
+    onDragEnd: end,
+  })
+  return { drag, over, setOver, takes, drop, end, grip }
+}
+
+function Board({ s, st, scs, hashes, group, ghosts, setGhosts, fresh, setFresh }: {
+  s: State; st: Story; scs: Scene[]; hashes: Record<string, string>; group: Group; ghosts: Proposal[]; setGhosts: (g: Proposal[]) => void; fresh?: string; setFresh: (id: string) => void
+}) {
   const cols = columns(s, st, scs, group)
   const mv = useMove((id, key, before) => moveScene(st, scs, group, cols, id, key, before))
+  const ch = useChapterMove(st)
   const notes = openNotes(s)
+  const byChapter = group === 'chapter', hasParts = byChapter && cols.some(c => c.part)
+  const titles = useRef(new Map<string, HTMLInputElement>())
+  const colOf = new Map(cols.flatMap(c => (c.items || []).map(x => [x.id, c.key] as const)))
   // A suggestion sits in its beat's column, else after the scene it follows.
   const ghostKey = (g: Proposal) => {
     const d = g.data as { beat?: string; order?: number; status?: string; label?: string }
-    if (group === 'beat') return d.beat && st.beats.includes(d.beat) ? d.beat : keyOf([...scs].reverse().find(x => x.order < (d.order ?? 0)) || ({ beat: '' } as Scene), 'beat', st)
-    return group === 'status' ? 'todo' : group === 'label' ? (d.label || '') : ''
+    const prev = [...scs].reverse().find(x => x.order < (d.order ?? 0))
+    if (group === 'beat') return d.beat && st.beats.includes(d.beat) ? d.beat : prev ? keyOf(s, prev, 'beat', st) : ''
+    if (group === 'chapter') return prev ? colOf.get(prev.id) ?? '' : cols[0]?.key ?? ''
+    return group === 'status' ? statusesOf(s)[0]?.id ?? 'todo' : group === 'label' ? (d.label || '') : ''
   }
   const add = (g: Proposal, key: string) => {
-    const p = group === 'beat' && key ? { ...g, data: { ...g.data, beat: key } } : g
+    const p = group === 'beat' && key ? { ...g, data: { ...g.data, beat: key } }
+      : byChapter ? { ...g, data: { ...g.data, order: orderAt(getState(), st.id, columnEnd(getState(), st, cols.find(c => c.key === key))) } } : g
     tx('Add suggested scene', () => applyProposal(p))
     setGhosts(ghosts.filter(x => x !== g))
   }
+  // Both kinds of drag land on a column: a card (into the column) or a chapter's grip (see useChapterMove).
+  const colDrop = (c?: Column) => ({
+    onDragOver: (e: React.DragEvent) => {
+      if (ch.drag.current) { if (ch.takes(c)) { e.preventDefault(); if (ch.over !== (c?.key ?? '+')) ch.setOver(c?.key ?? '+') } return }
+      if (c) mv.col(c.key).onDragOver(e)
+      else if (mv.drag.current) { e.preventDefault(); if (mv.over !== 'col:+') mv.setOver('col:+') }
+    },
+    onDragLeave: (e: React.DragEvent) => { if (ch.drag.current && !(e.currentTarget as Node).contains(e.relatedTarget as Node)) ch.setOver(undefined) },
+    onDrop: (e: React.DragEvent) => {
+      if (ch.drag.current) { e.preventDefault(); if (ch.takes(c)) ch.drop(c); else ch.end(); return }
+      if (c) return mv.col(c.key).onDrop(e)
+      const id = mv.drag.current
+      if (!id) return
+      e.preventDefault(); mv.end()
+      const sec = chapterFrom(st, id)
+      if (sec) setFresh(sec)
+    },
+  })
+  const n = new Map(scs.map((x, i) => [x.id, i + 1]))
+  const width = 'minmax(208px, 1fr)'
   return (
-    <div className={group === 'order' ? 'ol-flow' : 'ol-board'} style={group === 'order' ? undefined : { gridTemplateColumns: `repeat(${cols.length}, minmax(208px, 1fr))` }}>
-      {cols.map(c => {
-        const items = scs.filter(x => group === 'order' || keyOf(x, group, st) === c.key)
+    <div className={group === 'order' ? 'ol-flow' : 'ol-board'} style={group === 'order' ? undefined : { gridTemplateColumns: `repeat(${cols.length}, ${width})${byChapter ? ' 168px' : ''}` }}>
+      {cols.map((c, i) => {
+        const items = c.items ?? scs.filter(x => group === 'order' || keyOf(s, x, group, st) === c.key)
         const gs = ghosts.filter(g => group === 'order' || ghostKey(g) === c.key)
         const body = <>
-          {items.map(sc => <Card key={sc.id} s={s} sc={sc} n={scs.indexOf(sc) + 1} hash={hashes[sc.id]} notes={notes[sc.id] || 0} over={mv.over === sc.id} drag={mv.card(sc.id, c.key)} />)}
-          {gs.map((g, i) => <Ghost key={'g' + i} g={g} onAdd={() => add(g, ghostKey(g))} onDismiss={() => setGhosts(ghosts.filter(x => x !== g))} />)}
+          {items.map(sc => <Card key={sc.id} s={s} sc={sc} n={n.get(sc.id)} hash={hashes[sc.id]} notes={notes[sc.id] || 0} over={mv.over === sc.id} drag={mv.card(sc.id, c.key)} />)}
+          {gs.map((g, j) => <Ghost key={'g' + j} g={g} onAdd={() => add(g, ghostKey(g))} onDismiss={() => setGhosts(ghosts.filter(x => x !== g))} />)}
           <button className={'ol-add' + (mv.over === 'col:' + c.key ? ' over' : '')} onClick={() => addIn(st, scs, group, c.key)} {...mv.col(c.key)}>+ Scene</button>
         </>
         if (group === 'order') return <div key="flow" className="ol-flow-in">{body}</div>
+        const sec = c.sec, chapter = sec?.type === 'chapter' ? sec : undefined
+        const chOver = ch.over === c.key ? (chapter ? ' ch-before' : ' ch-into') : ''
+        const count = <span className="lbl" title={items.length ? `${items.reduce((t, x) => t + words(x.prose), 0).toLocaleString()} words` : undefined}>{items.length}{gs.length ? ` + ${gs.length} suggested` : ''}</span>
         return (
-          <div key={c.key || '-'} className={'ol-col' + (mv.over === 'col:' + c.key ? ' over' : '')} {...mv.col(c.key)}>
-            <div className="ol-colh">{c.color && <i className="dot" style={{ background: c.color }} />}<b className="clip">{c.name}</b>
-              <span className="lbl">{items.length}{gs.length ? ` + ${gs.length} suggested` : ''}</span></div>
+          <div key={c.key || '-'} className={'ol-col' + (mv.over === 'col:' + c.key ? ' over' : '') + chOver} {...colDrop(c)}>
+            {hasParts && <PartLine s={s} part={c.part} first={!!c.part && cols[i - 1]?.part?.id !== c.part.id} />}
+            {chapter ? <>
+              <div className="ol-colh ol-chaph">
+                <span className="ol-grip" title="Drag to move the chapter and its scenes" {...ch.grip(chapter.id)}><Icon name="drag" size={13} /></span>
+                <input className="inline ol-chap-t" ref={el => { if (el) titles.current.set(chapter.id, el); else titles.current.delete(chapter.id) }} value={chapter.title} placeholder="Untitled chapter"
+                  aria-label="Chapter title" autoFocus={fresh === chapter.id} onFocus={e => { if (fresh === chapter.id) e.target.select() }} onChange={e => update<'section'>(chapter.id, x => { x.title = e.target.value })}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} />
+                {count}
+                <MoreMenu s={s} id={chapter.id} label="Chapter menu" onRename={() => titles.current.get(chapter.id)?.select()} onCreated={setFresh} />
+              </div>
+              <Synopsis sec={chapter} />
+            </> : <div className="ol-colh">{c.color && <i className="dot" style={{ background: c.color }} />}<b className={'clip' + (byChapter ? ' ol-loose' : '')}>{c.name}</b>{count}</div>}
             {body}
           </div>
         )
       })}
+      {byChapter && <div className={'ol-col ol-newcol' + (ch.over === '+' || mv.over === 'col:+' ? ' over' : '')} {...colDrop()}>
+        {hasParts && <PartLine s={s} />}
+        <button className="ol-add" onClick={() => setFresh(addSection(st.id, 'chapter'))}>+ Chapter</button>
+        <button className="btn sm ghost" onClick={() => setFresh(addSection(st.id, 'part'))}>+ Part</button>
+        <p className="hint">Drop a scene here to start a chapter with it.</p>
+      </div>}
     </div>
   )
 }
 
+/** Above chapter columns: the part they belong to (named over its first column, a rule over the rest). */
+function PartLine({ s, part, first }: { s: State; part?: Section; first?: boolean }) {
+  const [renaming, setRenaming] = useState(false)
+  if (!part) return <div className="ol-part none" />
+  if (!first) return <div className="ol-part" />
+  return (
+    <div className="ol-part first">
+      {renaming
+        ? <input className="inline ol-part-in" autoFocus value={part.title} aria-label="Part title" onFocus={e => e.target.select()} onChange={e => update<'section'>(part.id, x => { x.title = e.target.value })}
+          onBlur={() => setRenaming(false)} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setRenaming(false) }} />
+        : <a href={'#text/' + part.id} className="clip" title="Read the whole part (double-click to rename)" onDoubleClick={e => { e.preventDefault(); setRenaming(true) }}>{nameOf(s, part.id)}</a>}
+      <MoreMenu s={s} id={part.id} label="Part menu" onRename={() => setRenaming(true)} />
+    </div>
+  )
+}
+
+/** A chapter's synopsis under its title: one line until you click it. */
+function Synopsis({ sec }: { sec: Section }) {
+  const [open, setOpen] = useState(false)
+  if (open) return <textarea className="ol-syn-in" autoFocus value={sec.synopsis} placeholder="What happens in this chapter" aria-label="Chapter synopsis" rows={2}
+    onChange={e => update<'section'>(sec.id, x => { x.synopsis = e.target.value })} onBlur={() => setOpen(false)} onKeyDown={e => { if (e.key === 'Escape') e.currentTarget.blur() }} />
+  return <button className={'ol-syn' + (sec.synopsis.trim() ? '' : ' empty')} title={sec.synopsis.trim() ? sec.synopsis : 'What happens in this chapter'} onClick={() => setOpen(true)}>{sec.synopsis.trim() || '+ Synopsis'}</button>
+}
+
 function Card({ s, sc, n, hash, notes, over, drag }: { s: State; sc: Scene; n?: number; hash?: string; notes: number; over?: boolean; drag?: ReturnType<ReturnType<typeof useMove>['card']> }) {
   const b = builtState(sc, hash)
-  const st = statusOf(sc)
   const ready = !sc.pinned && sc.card.trim() && !sc.prose.trim()
   const label = sc.label ? project(s).labels?.[sc.label] || sc.label : undefined
   return (
     <a className={'ol-card' + (over ? ' over' : '')} href={'#scene/' + sc.id} title={label ? `Label: ${label}` : undefined} {...drag}>
       {sc.label && <span className="stripe" style={{ background: labelColor(sc.label) }} />}
-      <span className="ol-card-top"><span className="lbl">{n ?? nameOf(s, sc.story)}</span>{sc.pinned && <span className="ol-lock" title="Locked: the assistant won’t redraft it"><Icon name="lock" size={12} />Locked</span>}</span>
+      <span className="ol-card-top"><span className="lbl grow">{n ?? nameOf(s, sc.story)}</span>{sc.pinned && <span className="ol-lock" title="Locked: the assistant won’t redraft it"><Icon name="lock" size={12} />Locked</span>}
+        <MoreMenu s={s} id={sc.id} label="Scene menu" className="ol-card-more" /></span>
       <h4>{sc.title || 'Untitled scene'}</h4>
       {sc.card.trim() ? <p>{sc.card}</p> : sc.prose.trim() ? <p className="ex">{excerpt(sc)}…</p> : <p className="none">No card yet. What happens?</p>}
       <span className="ol-ft">
-        <span className={'ol-pill ' + st.id}>{st.label}</span>
+        <StatusPill s={s} id={sc.status} />
         {sc.prose.trim() && <span className="wc">{words(sc.prose).toLocaleString()}{sc.target ? ` / ${sc.target.toLocaleString()}` : ''} words</span>}
         {notes > 0 && <span className="wc warn">{plural(notes, 'note')}</span>}
         {ready ? <span className="wc ai">Ready to draft</span> : BUILT[b].label && <span className={'wc ' + BUILT[b].cls} title={BUILT[b].hint}>{BUILT[b].label}</span>}
@@ -410,13 +567,14 @@ function Ghost({ g, onAdd, onDismiss }: { g: Proposal; onAdd: () => void; onDism
 
 type Col = { id: string; label: string; get: (sc: Scene) => string | number; render?: (sc: Scene) => ReactNode }
 function allColumns(s: State, hashes: Record<string, string>, withStory: boolean): Col[] {
-  const labels = project(s).labels || {}
+  const labels = project(s).labels || {}, statuses = statusesOf(s)
   const notes = openNotes(s)
   const short = (id: string) => { const f = get(s, id, 'fact'); return f?.at !== undefined ? eventCode(s, id) : (nameOf(s, id) || 'Missing').slice(0, 24) }
   return [
     ...(withStory ? [{ id: 'story', label: 'Story', get: (sc: Scene) => nameOf(s, sc.story) }] : []),
     { id: 'beat', label: 'Beat', get: sc => sc.beat },
-    { id: 'status', label: 'Status', get: sc => STATUSES.findIndex(x => x.id === (sc.status || 'todo')), render: sc => <span className={'ol-pill ' + statusOf(sc).id}>{statusOf(sc).label}</span> },
+    { id: 'chapter', label: 'Chapter', get: sc => chapterOf(s, sc.id)?.title || '' },
+    { id: 'status', label: 'Status', get: sc => statuses.findIndex(x => x.id === statusOf(s, sc.status).id), render: sc => <StatusPill s={s} id={sc.status} /> },
     { id: 'card', label: 'Card', get: sc => sc.card, render: sc => <span className="small">{sc.card || <i className="faint">{sc.prose.trim() ? 'No card' : 'No card yet'}</i>}</span> },
     { id: 'words', label: 'Words', get: sc => words(sc.prose), render: sc => <span className="ol-num">{words(sc.prose).toLocaleString()}{sc.target ? <><span className="faint"> / {sc.target.toLocaleString()}</span><span className="bar" style={{ display: 'block', marginTop: 4 }}><i style={{ width: Math.min(100, (words(sc.prose) / sc.target) * 100) + '%' }} /></span></> : null}</span> },
     { id: 'cast', label: 'Cast', get: sc => sc.cast.map(c => nameOf(s, c)).join(', '), render: sc => <span className="small">{sc.cast.map(c => nameOf(s, c)).join(' · ')}</span> },
@@ -443,39 +601,148 @@ function ColumnPicker({ s, cols, setCols, withStory }: { s: State; cols: string[
   )
 }
 
-function ListTable({ s, scs, hashes, cols, reorderable, withStory }: { s: State; scs: Scene[]; hashes: Record<string, string>; cols: string[]; reorderable?: boolean; withStory?: boolean }) {
+function ListTable({ s, scs, hashes, cols, story, withStory, onMove, onRemove, fresh, setFresh }: {
+  s: State; scs: Scene[]; hashes: Record<string, string>; cols: string[]; withStory?: boolean
+  /** The story outline: rows in story order, under their chapter and part headings, reordered by dragging. */
+  story?: Story
+  /** A hand-picked collection: its own order (dragging calls this), and a way to take a scene out. */
+  onMove?: (id: string, before?: string) => void; onRemove?: (id: string) => void
+  fresh?: string; setFresh?: (id: string) => void
+}) {
   const all = allColumns(s, hashes, !!withStory)
   const [sort, setSort] = useState<{ id: string; dir: 1 | -1 }>()
   const shown = all.filter(c => cols.includes(c.id) || (withStory && c.id === 'story'))
   const rows = sort ? [...scs].sort((a, b) => { const c = all.find(x => x.id === sort.id)!; const x = c.get(a), y = c.get(b); return (x < y ? -1 : x > y ? 1 : 0) * sort.dir }) : scs
-  const st = reorderable ? get(s, scs[0]?.story, 'story') : undefined
-  const mv = useMove((id, _k, before) => { if (st) moveScene(st, scs, 'order', [{ key: '', name: '' }], id, '', before) })
-  const drag = reorderable && !sort
+  const mv = useMove((id, _k, before) => {
+    if (onMove) return onMove(id, before)
+    if (!story) return
+    const now = getState(), sec = before ? get(now, before, 'section') : undefined
+    // Dropped on a heading: into that chapter (at its end) or part (with its own scenes, before its first chapter).
+    if (sec) return moveItems([id], story.id, intoSection(now, sec.id), `Move “${get(now, id, 'scene')?.title || 'Untitled scene'}” into “${sec.title || 'Untitled'}”`)
+    moveScene(story, scs, 'order', [{ key: '', name: '' }], id, '', before)
+  })
+  const drag = (!!story || !!onMove) && !sort
+  const titles = useRef(new Map<string, HTMLInputElement>())
+  const flow = story && !sort ? flowOf(s, story.id) : rows
+  const span = shown.length + 3 + (drag ? 1 : 0)
   return (
     <div className="ol-list">
-      {sort && <div className="row" style={{ marginBottom: 8 }}><span className="small muted">Sorted by {all.find(c => c.id === sort.id)?.label.toLowerCase()}</span><button className="btn sm ghost" onClick={() => setSort(undefined)}>Back to story order</button></div>}
+      {sort && <div className="row" style={{ marginBottom: 8 }}><span className="small muted">Sorted by {all.find(c => c.id === sort.id)?.label.toLowerCase()}</span><button className="btn sm ghost" onClick={() => setSort(undefined)}>{onMove ? 'Back to your order' : 'Back to story order'}</button></div>}
       <div className="tablewrap">
         <table className="mx ol-table">
-          <thead><tr>{drag && <th aria-label="Drag to reorder" />}<th>#</th><th>Scene</th>{shown.map(c => <th key={c.id}><button onClick={() => setSort(x => (x?.id === c.id ? (x.dir === 1 ? { id: c.id, dir: -1 } : undefined) : { id: c.id, dir: 1 }))}>{c.label}{sort?.id === c.id ? (sort.dir === 1 ? ' ↑' : ' ↓') : ''}</button></th>)}</tr></thead>
-          <tbody>{rows.map(sc => (
-            <tr key={sc.id} className={'click' + (mv.over === sc.id ? ' over' : '')} onClick={() => go('scene/' + sc.id)} {...(drag ? mv.card(sc.id, '') : {})}>
-              {drag && <td className="ol-handle" title="Drag to reorder"><Icon name="drag" size={14} /></td>}
-              <td className="mono faint">{withStory ? scenesOf(s, sc.story).indexOf(sc) + 1 : scs.indexOf(sc) + 1}</td>
-              <td className="ol-name"><b>{sc.title || 'Untitled scene'}</b>{sc.pinned && <span className="ol-lock" title="Locked"><Icon name="lock" size={11} /></span>}</td>
-              {shown.map(c => <td key={c.id}>{c.render ? c.render(sc) : String(c.get(sc))}</td>)}
-            </tr>))}</tbody>
+          <thead><tr>{drag && <th aria-label="Drag to reorder" />}<th>#</th><th>Scene</th>{shown.map(c => <th key={c.id}><button onClick={() => setSort(x => (x?.id === c.id ? (x.dir === 1 ? { id: c.id, dir: -1 } : undefined) : { id: c.id, dir: 1 }))}>{c.label}{sort?.id === c.id ? (sort.dir === 1 ? ' ↑' : ' ↓') : ''}</button></th>)}<th aria-label="Actions" /></tr></thead>
+          <tbody>{flow.map((x, i) => {
+            if (x.kind === 'section') {
+              const n = scenesIn(s, x.id), part = x.type === 'part', { onDragOver, onDrop } = mv.card(x.id, '')
+              return (
+                <tr key={x.id} className={'ol-secrow' + (part ? ' part' : '') + (mv.over === x.id ? ' into' : '')} onDragOver={onDragOver} onDrop={onDrop}>
+                  <td colSpan={span}><div className="ol-sech">
+                    <input className="inline" ref={el => { if (el) titles.current.set(x.id, el); else titles.current.delete(x.id) }} value={x.title} placeholder={part ? 'Untitled part' : 'Untitled chapter'}
+                      aria-label={part ? 'Part title' : 'Chapter title'} autoFocus={fresh === x.id} onFocus={e => { if (fresh === x.id) e.target.select() }}
+                      onChange={e => update<'section'>(x.id, y => { y.title = e.target.value })} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }} />
+                    <span className="lbl">{plural(n.length, 'scene')}{n.length ? ` · ${n.reduce((t, y) => t + words(y.prose), 0).toLocaleString()} words` : ''}</span>
+                    <span className="grow" />
+                    <a className="btn sm ghost" href={'#text/' + x.id} title={part ? 'Read the whole part' : 'Read the whole chapter'}>Read</a>
+                    <MoreMenu s={s} id={x.id} label={part ? 'Part menu' : 'Chapter menu'} onRename={() => titles.current.get(x.id)?.select()} onCreated={setFresh} />
+                  </div></td>
+                </tr>
+              )
+            }
+            const sc = x as Scene
+            return (
+              <tr key={sc.id} className={'click' + (mv.over === sc.id ? ' over' : '')} onClick={() => go('scene/' + sc.id)} {...(drag ? mv.card(sc.id, '') : {})}>
+                {drag && <td className="ol-handle" title="Drag to reorder"><Icon name="drag" size={14} /></td>}
+                <td className="mono faint">{onMove ? i + 1 : withStory ? scenesOf(s, sc.story).indexOf(sc) + 1 : scs.indexOf(sc) + 1}</td>
+                <td className="ol-name"><b>{sc.title || 'Untitled scene'}</b>{sc.pinned && <span className="ol-lock" title="Locked"><Icon name="lock" size={11} /></span>}</td>
+                {shown.map(c => <td key={c.id}>{c.render ? c.render(sc) : String(c.get(sc))}</td>)}
+                <td className="ol-acts" onClick={e => e.stopPropagation()}>
+                  {onRemove && <button className="x" aria-label="Take out of the collection" title="Take out of the collection (the scene stays in its story)" onClick={() => onRemove(sc.id)}>×</button>}
+                  <MoreMenu s={s} id={sc.id} label="Scene menu" />
+                </td>
+              </tr>
+            )
+          })}</tbody>
         </table>
       </div>
     </div>
   )
 }
 
-// ---------------- collections: saved filters over scenes ----------------
+// ---------------- collections: saved filters, or scenes picked by hand ----------------
 
 export function CollectionView({ s, id }: { s: State; id: string }) {
   const c = (project(s).collections || []).find(x => x.id === id)
   const [cols, setCols] = useState<string[]>(() => stored('canon.outline.cols', 'beat,status,card,words,cast').split(','))
   if (!c) return <><Bar /><div className="empty"><h2>Not found</h2><p>It may have been deleted, or undone.</p><a className="btn" href="#home">Back to Home</a></div></>
+  return c.ids ? <HandPicked s={s} c={c} cols={cols} setCols={setCols} /> : <Smart s={s} c={c} cols={cols} setCols={setCols} />
+}
+
+function CollectionBar({ c }: { c: Collection }) {
+  return (
+    <Bar>
+      <div className="ol-crumb grow"><Icon name={c.ids ? 'list' : 'collection'} size={14} /><b className="clip">{c.name || 'Untitled collection'}</b><span className="lbl">{c.ids ? 'Hand-picked' : 'Smart collection'}</span></div>
+      <button className="btn sm ghost danger" onClick={() => { tx(`Delete collection “${c.name}”`, () => update<'project'>('project', x => { x.collections = x.collections!.filter(y => y.id !== c.id) })); go('home') }}><Icon name="trash" size={14} />Delete</button>
+      <span className="bar-sep" />
+    </Bar>
+  )
+}
+
+/** A hand-picked collection: the scenes you chose, in your order. Taking one out leaves it in its story. */
+function HandPicked({ s, c, cols, setCols }: { s: State; c: Collection; cols: string[]; setCols: (c: string[]) => void }) {
+  const scs = (c.ids || []).map(i => get(s, i, 'scene')).filter((x): x is Scene => !!x)
+  const move = (id: string, before?: string) => tx(`Reorder “${c.name || 'Untitled collection'}”`, () => update<'project'>('project', x => {
+    const col = x.collections!.find(y => y.id === c.id)!, rest = (col.ids || []).filter(i => i !== id), at = before ? rest.indexOf(before) : -1
+    rest.splice(at < 0 ? rest.length : at, 0, id)
+    col.ids = rest
+  }))
+  return (
+    <>
+      <CollectionBar c={c} />
+      <div className="ol">
+        <div className="ol-head">
+          <input className="ol-title" value={c.name} placeholder="Untitled collection" aria-label="Collection name" onChange={e => update<'project'>('project', x => { x.collections!.find(y => y.id === c.id)!.name = e.target.value })} />
+          <p className="ol-sub">{scs.length ? `${plural(scs.length, 'scene')} you picked, in the order you give them.` : 'Scenes you pick, in the order you give them.'} Taking a scene out leaves it where it is in its story.</p>
+          <div className="ol-props">
+            <ScenePicker s={s} c={c} />
+            <span className="grow" />
+            <span className="lbl">Columns</span><ColumnPicker s={s} cols={cols} setCols={setCols} withStory />
+          </div>
+        </div>
+        {scs.length ? <ListTable s={s} scs={scs} hashes={{}} cols={cols} withStory onMove={move} onRemove={sid => toggleInCollection(c.id, sid)} />
+          : <div className="ol-empty"><div className="ol-empty-card"><h2>No scenes yet</h2>
+            <p className="muted">Add scenes here, drag them onto the collection in the sidebar, or choose “Add to collection” in any scene’s ⋯ menu.</p>
+            <div className="row"><ScenePicker s={s} c={c} primary /></div></div></div>}
+      </div>
+    </>
+  )
+}
+
+/** Tick scenes in or out of a hand-picked collection; new ones join at the end. */
+function ScenePicker({ s, c, primary }: { s: State; c: Collection; primary?: boolean }) {
+  const [q, setQ] = useState('')
+  const has = new Set(c.ids), needle = q.trim().toLowerCase()
+  const match = (sc: Scene) => !needle || `${sc.title} ${sc.card}`.toLowerCase().includes(needle)
+  const groups = stories(s).map(st => ({ st, xs: scenesOf(s, st.id).filter(match) })).filter(g => g.xs.length)
+  return (
+    <Popover trigger={o => <button className={primary ? 'btn pri' : 'ol-chip'} onClick={o}><Icon name="plus" size={13} />Add scenes</button>}>{() => (
+      <div className="ol-addpick">
+        <input className="f" autoFocus placeholder="Find a scene" aria-label="Find a scene" value={q} onChange={e => setQ(e.target.value)} />
+        <div className="ol-addpick-list">
+          {groups.map(({ st, xs }) => <div key={st.id} className="stack" style={{ gap: 0 }}>
+            <span className="lbl ol-pick-h">{st.title || 'Untitled story'}</span>
+            {xs.map(sc => <label key={sc.id} className="menu-item"><input type="checkbox" checked={has.has(sc.id)} onChange={() => toggleInCollection(c.id, sc.id)} />
+              <span className="grow clip">{sc.title || 'Untitled scene'}</span><span className="small muted clip">{chapterOf(s, sc.id)?.title || ''}</span></label>)}
+          </div>)}
+          {!groups.length && <p className="small muted ol-pick-h">{needle ? `No scene matches “${q.trim()}”.` : 'No scenes yet.'}</p>}
+        </div>
+      </div>
+    )}</Popover>
+  )
+}
+
+/** A smart collection: a saved filter; scenes join and leave as they change. */
+function Smart({ s, c, cols, setCols }: { s: State; c: Collection; cols: string[]; setCols: (c: string[]) => void }) {
+  const id = c.id
   const set = (fn: (f: Filter & { name?: string }) => void, label = 'Edit collection') => tx(label, () => update<'project'>('project', x => {
     const col = x.collections!.find(y => y.id === id)!
     const f: Filter & { name?: string } = { ...col.filter, name: col.name }
@@ -486,11 +753,7 @@ export function CollectionView({ s, id }: { s: State; id: string }) {
   const clear = (k: keyof Filter) => <button className="x" aria-label="Clear" onClick={() => set(x => { delete x[k] })}>×</button>
   return (
     <>
-      <Bar>
-        <div className="ol-crumb grow"><b className="clip">{c.name || 'Untitled collection'}</b><span className="lbl">Collection</span></div>
-        <button className="btn sm ghost danger" onClick={() => { tx(`Delete collection “${c.name}”`, () => update<'project'>('project', x => { x.collections = x.collections!.filter(y => y.id !== id) })); go('home') }}><Icon name="trash" size={14} />Delete</button>
-        <span className="bar-sep" />
-      </Bar>
+      <CollectionBar c={c} />
       <div className="ol">
         <div className="ol-head">
           <input className="ol-title" value={c.name} placeholder="Untitled collection" aria-label="Collection name" onChange={e => set(x => { x.name = e.target.value })} />
@@ -500,9 +763,9 @@ export function CollectionView({ s, id }: { s: State; id: string }) {
             <Popover trigger={o => <span className="ol-chip-wrap"><button className="ol-chip" onClick={o}><span className="k">Story</span>{f.story ? nameOf(s, f.story) : 'Any'}</button>{f.story && clear('story')}</span>}>{close => <>
               <button className="menu-item" onClick={() => { set(x => { x.story = undefined }); close() }}>Any story</button>
               {stories(s).map(x => <button key={x.id} className={'menu-item' + (f.story === x.id ? ' on' : '')} onClick={() => { set(y => { y.story = x.id }); close() }}>{x.title}</button>)}</>}</Popover>
-            <Popover trigger={o => <span className="ol-chip-wrap"><button className="ol-chip" onClick={o}><span className="k">Status</span>{f.status ? STATUSES.find(x => x.id === f.status)?.label : 'Any'}</button>{f.status && clear('status')}</span>}>{close => <>
+            <Popover trigger={o => <span className="ol-chip-wrap"><button className="ol-chip" onClick={o}><span className="k">Status</span>{f.status ? statusOf(s, f.status).label : 'Any'}</button>{f.status && clear('status')}</span>}>{close => <>
               <button className="menu-item" onClick={() => { set(x => { x.status = undefined }); close() }}>Any status</button>
-              {STATUSES.map(x => <button key={x.id} className={'menu-item' + (f.status === x.id ? ' on' : '')} onClick={() => { set(y => { y.status = x.id }); close() }}>{x.label}</button>)}</>}</Popover>
+              {statusesOf(s).map(x => <button key={x.id} className={'menu-item' + (f.status === x.id ? ' on' : '')} onClick={() => { set(y => { y.status = x.id }); close() }}><i className="dot" style={{ background: x.color }} />{x.label}</button>)}</>}</Popover>
             <Popover trigger={o => <span className="ol-chip-wrap"><button className="ol-chip" onClick={o}><span className="k">Label</span>{f.label ? <><i className="dot" style={{ background: labelColor(f.label) }} />{project(s).labels?.[f.label] || f.label}</> : 'Any'}</button>{f.label && clear('label')}</span>}>{close => <>
               <button className="menu-item" onClick={() => { set(x => { x.label = undefined }); close() }}>Any label</button>
               {LABELS.map(l => <button key={l} className={'menu-item' + (f.label === l ? ' on' : '')} onClick={() => { set(y => { y.label = l }); close() }}><i className="dot" style={{ background: labelColor(l) }} />{project(s).labels?.[l] || l}</button>)}</>}</Popover>

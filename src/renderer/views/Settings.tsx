@@ -1,22 +1,25 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   update, create, tx, list, project, stories, scenesOf, allScenes, entities, typeIds, typeDef, words, totalWords, sessionWords, today, guidesFor, nameOf,
-  LABELS, GUIDE_KINDS, type State, type Proposal, type MetaField, type FieldKind, type GuideKind, type Project,
+  LABELS, GUIDE_KINDS, STATUSES, statusesOf, statusOf, dailyGoal, writingDaysLeft, uid, type StatusDef, type State, type Proposal, type MetaField, type FieldKind, type GuideKind, type Project,
 } from '../store.ts'
 import { slug } from '../schema.ts'
 import { saveSettings, refreshStatus, completeJSON, useAI, modelFor, fallsBack, aiReady, JOBS, PROVIDERS, providerName, type Settings as AISettings, type Provider, type Job, type JobModel } from '../ai.ts'
 import { projectFromBackground, normalizeProposal } from '../prompts.ts'
 import { compile, FORMATS, type Format } from '../compile.ts'
-import { Area, useJob, JobStatus, ProposedChanges, ConnectPrompt, Spark, Icon, savedToast, closeSettings, openSettings, getAppearance, applyAppearance, type SettingsSection, type Appearance } from '../ui.tsx'
+import { SettingsGroup, Area, Popover, useJob, JobStatus, ProposedChanges, ConnectPrompt, Spark, Icon, savedToast, closeSettings, openSettings, getAppearance, applyAppearance, type SettingsSection, type Appearance } from '../ui.tsx'
 import { GuideRow } from './shared.tsx'
 import { TypesView } from './World.tsx'
+import { ExportSection, BookSection } from './Export.tsx'
+import { BackupsSection } from './Projects.tsx'
 import './settings.css'
 
 const SECTIONS: { group: string; items: [SettingsSection, string, string][] }[] = [
-  { group: 'Project', items: [['details', 'Details and background', 'Title, logline, and the background the assistant reads'], ['goals', 'Goals', 'Word targets, deadline, and your writing history']] },
-  { group: 'Writing', items: [['guides', 'Guides', 'Style, rules and banned phrases, for the whole project or one story or character'], ['labels', 'Labels and scene fields', 'What the label colours mean, and fields every scene card has']] },
+  { group: 'Project', items: [['details', 'Details and background', 'Title, logline, and the background the assistant reads'], ['book', 'Book details', 'Front and back matter, the cover and the metadata that go into an export'], ['goals', 'Goals', 'Word targets, deadline, and your writing history']] },
+  { group: 'Writing', items: [['guides', 'Guides', 'Style, rules and banned phrases, for the whole project or one story or character'], ['labels', 'Statuses, labels and fields', 'The stages a scene moves through, what the label colours mean, and fields every scene card has']] },
   { group: 'World', items: [['types', 'Types and fields', 'The kinds of things in your world and the fields each sheet has']] },
-  { group: 'Canon app', items: [['assistant', 'Assistant', 'For every project on this Mac. Canon sends only what a task needs; keys stay on this machine.'], ['export', 'Export and backup', 'Compile stories to EPUB, print, Markdown or text; back up the project'], ['appearance', 'Appearance', 'On this Mac only']] },
+  { group: 'Files', items: [['export', 'Export', 'Compile the manuscript to Word, PDF, EPUB, RTF, Markdown or text'], ['backups', 'Backups', 'Earlier copies of this project, and restoring one']] },
+  { group: 'Canon app', items: [['assistant', 'Assistant', 'For every project on this Mac. Canon sends only what a task needs; keys stay on this machine.'], ['appearance', 'Appearance', 'On this Mac only']] },
 ]
 const editProject = (fn: (x: Project) => void) => update<'project'>('project', fn)
 
@@ -46,7 +49,9 @@ export function SettingsWindow({ s, section }: { s: State; section: SettingsSect
             {section === 'labels' && <Labels s={s} />}
             {section === 'types' && <TypesView s={s} />}
             {section === 'assistant' && <Assistant />}
-            {section === 'export' && <Export s={s} />}
+            {section === 'book' && <BookSection s={s} />}
+            {section === 'export' && <ExportSection s={s} />}
+            {section === 'backups' && <BackupsSection s={s} />}
             {section === 'appearance' && <AppearanceSection />}
           </div>
         </div>
@@ -55,8 +60,7 @@ export function SettingsWindow({ s, section }: { s: State; section: SettingsSect
   )
 }
 
-const Group = ({ label, children, aside }: { label: string; children: ReactNode; aside?: ReactNode }) =>
-  <section className="set-group"><div className="row"><span className="lbl grow">{label}</span>{aside}</div>{children}</section>
+const Group = SettingsGroup
 
 // ---------------- details and background ----------------
 
@@ -98,11 +102,29 @@ function Details({ s }: { s: State }) {
 const STOP = new Set('the a an and or but of to in on at for with as by from is was were be been are it its it’s he she they them his her their i you we me my your our that this these those there then than so not no if into out up down over just had has have do did does said says what when where who which while one all about like back him would could will can only now’s don’t didn’t'.split(' '))
 const days = (a: string, b: string) => Math.round((new Date(b).getTime() - new Date(a).getTime()) / 864e5)
 
+/** Characters (spaces included, line breaks not) and manuscript pages, about 250 words to a page. */
+const charsOf = (t: string) => t.replace(/\n/g, '').length
+const pagesOf = (w: number) => Math.ceil(w / 250)
+const sizeLine = (w: number, c: number) => `${c.toLocaleString()} characters · about ${pagesOf(w).toLocaleString()} page${pagesOf(w) === 1 ? '' : 's'}`
+/** Weekdays Monday first, as numbers Date.getDay() uses (0 = Sunday). */
+const WEEK = [1, 2, 3, 4, 5, 6, 0]
+const dayName = (d: number, style: 'short' | 'long' = 'short') => new Date(2024, 0, 7 + d).toLocaleDateString(undefined, { weekday: style }) // 7 Jan 2024 was a Sunday
+
 function Goals({ s }: { s: State }) {
   const p = project(s)
-  const total = totalWords(s), todayWords = Math.max(0, sessionWords(s))
+  const total = totalWords(s), todayWords = Math.max(0, sessionWords(s)), chars = allScenes(s).reduce((n, sc) => n + charsOf(sc.prose), 0)
   const left = p.deadline ? days(today(), p.deadline) : undefined
-  const perDay = p.target && left && left > 0 ? Math.ceil(Math.max(0, p.target - total) / left) : undefined
+  const wdays = p.writingDays?.length ? p.writingDays : WEEK
+  const writing = p.deadline && left !== undefined && left >= 0 ? writingDaysLeft(p.deadline, wdays) : 0
+  const remaining = p.target ? Math.max(0, p.target - (total - todayWords)) : 0
+  const perDay = p.target && writing > 0 ? Math.ceil(remaining / writing) : undefined
+  const canWork = !!p.target && !!p.deadline && left !== undefined && left >= 0
+  const auto = !!p.goalFromDeadline && canWork, goal = dailyGoal(s)
+  const toggleDay = (d: number) => editProject(x => {
+    const cur = x.writingDays?.length ? x.writingDays : WEEK
+    const next = cur.includes(d) ? cur.filter(y => y !== d) : [...cur, d]
+    x.writingDays = next.length === 7 ? undefined : next.length ? next : cur // at least one day stays
+  })
   const hist = useMemo(() => {
     const byDate = new Map(list(s, 'day').map(d => [d.date, Math.max(0, d.words - d.start)]))
     return Array.from({ length: 30 }, (_, i) => { const d = new Date(Date.now() - (29 - i) * 864e5).toLocaleDateString('sv'); return { d, n: byDate.get(d) || 0 } })
@@ -127,26 +149,40 @@ function Goals({ s }: { s: State }) {
       <Group label="Targets">
         <div className="set-box pad stack">
           <div className="grid3">
-            {num(p.sessionTarget, n => editProject(x => { x.sessionTarget = n }), 'Daily goal (words)', 100)}
+            {auto
+              ? <label className="field" title="Worked out from the target and the due date. Untick the option below to set your own."><span className="lbl">Daily goal (words)</span><input className="f" type="number" disabled value={goal || ''} /></label>
+              : num(p.sessionTarget, n => editProject(x => { x.sessionTarget = n }), 'Daily goal (words)', 100)}
             {num(p.target, n => editProject(x => { x.target = n }), 'Project target (words)')}
             <label className="field"><span className="lbl">Due date</span><input className="f" type="date" value={p.deadline || ''} onChange={e => editProject(x => { x.deadline = e.target.value || undefined })} /></label>
           </div>
+          <div className="stack set-auto">
+            <label className="row nowrap" title={canWork ? undefined : 'Needs a project target and a due date that hasn’t passed'}>
+              <input type="checkbox" checked={!!p.goalFromDeadline} disabled={!canWork && !p.goalFromDeadline} onChange={e => editProject(x => { x.goalFromDeadline = e.target.checked || undefined })} />
+              <span>Work out the daily goal from the deadline{!canWork && <span className="muted"> · needs a target and a due date</span>}</span></label>
+            {p.goalFromDeadline && <>
+              <div className="row set-days" role="group" aria-label="Writing days">
+                <span className="small muted">Writing days</span>
+                {WEEK.map(d => <button key={d} className={'chip' + (wdays.includes(d) ? ' on' : '')} aria-pressed={wdays.includes(d)} title={dayName(d, 'long')} onClick={() => toggleDay(d)}>{dayName(d)}</button>)}
+              </div>
+              {auto && <p className="small muted">Today’s goal is {(goal || 0).toLocaleString()} words: {remaining.toLocaleString()} words to go over {writing} writing day{writing === 1 ? '' : 's'}, today included. It updates each day as you write.</p>}
+            </>}
+          </div>
           <div className="stack" style={{ gap: 6 }}>
-            <div className="row"><b>{todayWords.toLocaleString()}</b><span className="muted">{p.sessionTarget ? `of ${p.sessionTarget.toLocaleString()} today` : 'words today'}</span></div>
-            {p.sessionTarget ? <div className="bar"><i style={{ width: Math.min(100, (todayWords / p.sessionTarget) * 100) + '%' }} /></div> : null}
-            <div className="row"><b>{total.toLocaleString()}</b><span className="muted">{p.target ? `of ${p.target.toLocaleString()} words` : 'words in the project'}</span></div>
+            <div className="row"><b>{todayWords.toLocaleString()}</b><span className="muted">{goal ? `of ${goal.toLocaleString()} today` : 'words today'}</span></div>
+            {goal ? <div className="bar"><i style={{ width: Math.min(100, (todayWords / goal) * 100) + '%' }} /></div> : null}
+            <div className="row"><b>{total.toLocaleString()}</b><span className="muted">{p.target ? `of ${p.target.toLocaleString()} words` : 'words in the project'}</span><span className="grow" /><span className="small muted">{sizeLine(total, chars)}</span></div>
             {p.target ? <div className="bar"><i style={{ width: Math.min(100, (total / p.target) * 100) + '%' }} /></div> : null}
-            {left !== undefined && <p className="small muted">{left < 0 ? `The due date passed ${-left} days ago.` : `${left} days left${perDay !== undefined ? `: about ${perDay.toLocaleString()} words a day reaches the target` : ''}.`}</p>}
+            {left !== undefined && <p className="small muted">{left < 0 ? `The due date passed ${-left} days ago.` : `${left} days left${wdays.length < 7 ? `, ${writing} of them writing days` : ''}${perDay !== undefined && !auto ? `: about ${perDay.toLocaleString()} words a writing day reaches the target` : ''}.`}</p>}
           </div>
         </div>
       </Group>
       <Group label="Stories">
         <div className="set-box">
           {stories(s).map(st => {
-            const w = scenesOf(s, st.id).reduce((n, sc) => n + words(sc.prose), 0)
+            const scs = scenesOf(s, st.id), w = scs.reduce((n, sc) => n + words(sc.prose), 0)
             return (
               <div key={st.id} className="set-row">
-                <span className="grow clip">{st.title}</span>
+                <span className="grow clip">{st.title}{w > 0 && <span className="small muted set-size">{sizeLine(w, scs.reduce((n, sc) => n + charsOf(sc.prose), 0))}</span>}</span>
                 <input className="f set-num" type="number" min={0} step={500} value={st.target || ''} placeholder="Target" aria-label={`Target for ${st.title}`} onChange={e => update<'story'>(st.id, x => { x.target = Number(e.target.value) || undefined })} />
                 <span className="small muted set-words">{w.toLocaleString()}{st.target ? ` / ${st.target.toLocaleString()}` : ''}</span>
                 {st.target ? <div className="bar" style={{ width: 90 }}><i style={{ width: Math.min(100, (w / st.target) * 100) + '%' }} /></div> : <span style={{ width: 90 }} />}
@@ -213,6 +249,54 @@ function Guides({ s }: { s: State }) {
 
 // ---------------- labels and scene fields ----------------
 
+/** The grey and the six label colours a status can take. */
+const STATUS_COLORS = ['var(--line2)', ...LABELS.map(l => `var(--l-${l})`)]
+/** Edit the project's statuses, writing the defaults in on the first change. */
+const editStatuses = (fn: (xs: StatusDef[], x: Project) => void) => editProject(x => { if (!x.statuses?.length) x.statuses = STATUSES.map(y => ({ ...y })); fn(x.statuses, x) })
+
+function Statuses({ s }: { s: State }) {
+  const all = statusesOf(s)
+  const [drag, setDrag] = useState<number>(), [over, setOver] = useState<number>(), [fresh, setFresh] = useState<string>()
+  const used = (id: string) => allScenes(s).filter(sc => statusOf(s, sc.status).id === id).length
+  const add = () => { const id = uid('st'); tx('Add status', () => editStatuses(xs => { xs.push({ id, label: 'New status', color: STATUS_COLORS[1 + (xs.length % 6)] }) }), false); setFresh(id) }
+  const move = (from: number, to: number) => { if (from !== to && from + 1 !== to) tx('Reorder statuses', () => editStatuses(xs => { const [x] = xs.splice(from, 1); xs.splice(to > from ? to - 1 : to, 0, x) })) }
+  /** Remove a status; its scenes (and any collection filtering on it) take the first remaining status. One undo step. */
+  const drop = (i: number) => {
+    const gone = all[i], rest = all.filter((_, j) => j !== i), to = rest[0]
+    if (!to) return
+    const scs = allScenes(s).filter(sc => statusOf(s, sc.status).id === gone.id)
+    tx(`Remove status “${gone.label}”${scs.length ? `; ${scs.length} scene${scs.length === 1 ? '' : 's'} now “${to.label}”` : ''}`, () => {
+      for (const sc of scs) update<'scene'>(sc.id, x => { x.status = to.id })
+      editStatuses((xs, x) => { xs.splice(i, 1); for (const c of x.collections || []) if (c.filter.status === gone.id) c.filter.status = to.id })
+    })
+  }
+  return (
+    <Group label="Statuses" aside={<button className="btn sm" onClick={add}>Add status</button>}>
+      <p className="small muted">The stages a scene moves through, in order. Drag to reorder; the last one counts as finished.</p>
+      <div className="set-box">
+        {all.map((st, i) => (
+          <div key={st.id} className={'set-row set-status' + (over === i && drag !== undefined && drag !== i ? ' over' : '')} draggable={drag !== undefined || undefined}
+            onDragOver={e => { if (drag === undefined) return; e.preventDefault(); setOver(i) }} onDrop={e => { e.preventDefault(); if (drag !== undefined) move(drag, i); setDrag(undefined); setOver(undefined) }}
+            onDragEnd={() => { setDrag(undefined); setOver(undefined) }}>
+            <span className="set-grip" title="Drag to reorder" onMouseDown={() => setDrag(i)} onMouseUp={() => setDrag(undefined)}><Icon name="drag" size={14} /></span>
+            <Popover trigger={o => <button className="set-swatch" style={{ background: st.color }} aria-label={`Colour of ${st.label}`} title="Colour" onClick={o} />}>{close => (
+              <div className="set-swatches" role="listbox" aria-label="Colour">{STATUS_COLORS.map(c => <button key={c} role="option" aria-selected={st.color === c} className={'set-swatch' + (st.color === c ? ' on' : '')} style={{ background: c }}
+                aria-label={c === 'var(--line2)' ? 'Grey' : c.slice(8, -1)} onClick={() => { tx(`Recolour “${st.label}”`, () => editStatuses(xs => { xs[i].color = c }), false); close() }} />)}</div>
+            )}</Popover>
+            <input className="f" value={st.label} placeholder="Status name" aria-label="Status name" autoFocus={fresh === st.id} onFocus={e => { if (fresh === st.id) e.target.select() }}
+              onChange={e => editStatuses(xs => { xs[i].label = e.target.value })} />
+            <span className="small muted set-words">{used(st.id) ? `${used(st.id)} scene${used(st.id) === 1 ? '' : 's'}` : ''}</span>
+            <button className="icon-btn" aria-label={`Remove ${st.label}`} disabled={all.length < 2}
+              title={all.length < 2 ? 'A project needs at least one status' : used(st.id) ? `Remove; its scenes become “${(all[i === 0 ? 1 : 0]).label}”` : 'Remove'} onClick={() => drop(i)}><Icon name="trash" size={15} /></button>
+          </div>
+        ))}
+        {all.length > 1 && <div className={'set-status-end' + (over === all.length ? ' over' : '')} onDragOver={e => { if (drag === undefined) return; e.preventDefault(); setOver(all.length) }}
+          onDrop={e => { e.preventDefault(); if (drag !== undefined) move(drag, all.length); setDrag(undefined); setOver(undefined) }} />}
+      </div>
+    </Group>
+  )
+}
+
 const KINDS: { id: FieldKind; label: string }[] = [{ id: 'text', label: 'Text' }, { id: 'check', label: 'Checkbox' }, { id: 'list', label: 'Choice' }, { id: 'date', label: 'Date' }]
 
 function Labels({ s }: { s: State }) {
@@ -221,6 +305,7 @@ function Labels({ s }: { s: State }) {
   const setField = (i: number, patch: Partial<MetaField>) => editProject(x => { x.sceneFields![i] = { ...x.sceneFields![i], ...patch } })
   return (
     <>
+      <Statuses s={s} />
       <Group label="Label colours">
         <p className="small muted">Name what each colour means on your cards: a point of view, a timeline, a thread.</p>
         <div className="set-labels">{LABELS.map(l => (
@@ -382,49 +467,6 @@ export function Assistant() {
 }
 
 // ---------------- export and backup ----------------
-
-function Export({ s }: { s: State }) {
-  const sts = stories(s)
-  const [pick, setPick] = useState<string[]>(() => sts.map(x => x.id))
-  const [fmt, setFmt] = useState<Format>('epub')
-  const [o, setO] = useState({ sceneTitles: false, storyTitles: true, titlePage: sts.length > 1, separator: '* * *' })
-  const [err, setErr] = useState('')
-  const [busy, setBusy] = useState(false)
-  const left = allScenes(s).filter(sc => pick.includes(sc.story) && sc.exclude && sc.prose.trim()).length
-  const [info, setInfo] = useState<{ dataDir: string; backups: string }>()
-  useEffect(() => { fetch('/api/info').then(r => r.json()).then(setInfo) }, [])
-  const backup = async () => { try { savedToast((await (await fetch('/api/backup', { method: 'POST' })).json()).path) } catch (e) { setErr(String(e)) } }
-  const reveal = (path: string) => fetch('/api/reveal', { method: 'POST', body: JSON.stringify({ path }) })
-  const check = (k: 'sceneTitles' | 'storyTitles' | 'titlePage', label: string) => <label className="row nowrap"><input type="checkbox" checked={o[k]} onChange={e => setO({ ...o, [k]: e.target.checked })} />{label}</label>
-  return (
-    <>
-      <Group label="Stories to export">
-        <div className="set-box">{sts.map(st => (
-          <label key={st.id} className="set-row"><input type="checkbox" checked={pick.includes(st.id)} onChange={() => setPick(p => sts.map(x => x.id).filter(x => (x === st.id ? !p.includes(x) : p.includes(x))))} /><span className="grow">{st.title}</span>
-            <span className="small muted">{scenesOf(s, st.id).reduce((n, sc) => n + words(sc.prose), 0).toLocaleString()} words</span></label>
-        ))}{!sts.length && <p className="set-row small muted">No stories yet.</p>}</div>
-        {left > 0 && <p className="small muted">{left} scene{left === 1 ? ' is' : 's are'} marked “Leave out of export” and will be skipped.</p>}
-      </Group>
-      <Group label="Format">
-        <div className="seg" style={{ justifySelf: 'start' }}>{FORMATS.map(f => <button key={f.id} className={fmt === f.id ? 'on' : ''} onClick={() => setFmt(f.id)}>{f.label}</button>)}</div>
-        <div className="row" style={{ gap: 16 }}>{check('titlePage', 'Title page')}{check('storyTitles', 'Story titles')}{check('sceneTitles', 'Scene titles')}
-          <label className="row nowrap" style={{ gap: 6 }}><span className="muted">Between scenes</span><input className="f" style={{ width: 72, padding: '3px 8px', textAlign: 'center' }} value={o.separator} aria-label="Scene separator" onChange={e => setO({ ...o, separator: e.target.value })} /></label></div>
-        {fmt === 'epub' && <p className="small muted">EPUB always keeps story titles: readers build the table of contents from them.</p>}
-        <div className="row"><button className="btn pri" disabled={!pick.length || busy} onClick={() => { setErr(''); setBusy(true); compile(s, pick, fmt, o).then(p => savedToast(p || ''), e => setErr(String(e).replace(/^Error: /, ''))).finally(() => setBusy(false)) }}>{busy ? 'Exporting…' : 'Export…'}</button></div>
-        {err && <div className="err">{err}</div>}
-      </Group>
-      <Group label="Backup">
-        <p className="small muted">The project is one database file. Canon copies it on every start and keeps the last 10 next to it, and keeps every change in History, so undo reaches back across restarts.</p>
-        <div className="row">
-          <button className="btn" onClick={backup}>Save a JSON backup…</button>
-          {info && <button className="btn ghost" onClick={() => reveal(info.dataDir + '/canon.db')}>Show the project file</button>}
-          {info && <button className="btn ghost" onClick={() => reveal(info.backups)}>Show backups</button>}
-        </div>
-        {info && <p className="small faint mono">{info.dataDir}</p>}
-      </Group>
-    </>
-  )
-}
 
 // ---------------- appearance ----------------
 

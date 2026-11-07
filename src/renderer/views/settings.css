@@ -36,3 +36,23 @@ label.set-row:hover { background: var(--accent-tint) }
 .prov-card .grow { flex: 1 }
 .prov-card .row { flex-wrap: wrap }
 @media (max-width: 760px) { .settings-nav { flex-basis: 170px } .set-labels { grid-template-columns: 1fr 1fr } }
+
+/* goals: a daily goal worked out from the deadline, and sizes in characters and pages */
+.set-auto { gap: 8px; padding: 10px 0 2px; border-top: 1px solid var(--line) }
+.set-days { gap: 4px }
+.set-days .small { margin-right: 4px }
+.set-days .chip { height: 24px; padding: 0 9px; border: 1px solid var(--line2); background: var(--panel); cursor: default }
+.set-days .chip.on { background: var(--accent-soft); border-color: transparent }
+.set-size { display: block; font-size: 11.5px; margin-top: 1px }
+
+/* statuses: drag to reorder, a colour, a name */
+.set-status { gap: 10px; padding: 8px 14px 8px 8px; position: relative }
+.set-status .f { padding: 5px 9px }
+.set-status.over::before, .set-status-end.over::before { content: ''; position: absolute; left: 8px; right: 8px; top: -1px; height: 2px; border-radius: 1px; background: var(--accent) }
+.set-status-end { position: relative; height: 8px; margin-top: -8px }
+.set-grip { display: inline-grid; place-items: center; width: 18px; height: 26px; color: var(--faint); cursor: grab; flex: none }
+.set-grip:hover { color: var(--ink2) }
+.set-swatch { width: 18px; height: 18px; border-radius: 50%; border: 0; padding: 0; flex: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent) }
+.set-swatch:hover { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent), 0 0 0 3px var(--hover) }
+.set-swatch.on { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent), 0 0 0 2px var(--panel), 0 0 0 4px var(--accent) }
+.set-swatches { display: flex; gap: 10px; padding: 8px 10px; min-width: 0 }

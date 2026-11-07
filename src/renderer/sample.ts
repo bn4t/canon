@@ -51,6 +51,8 @@ add('project', 'project', {
   thesis: 'What we inherit includes what we were protected from.', background: 'Merrow is a fishing town on a tidal estuary. The harbour office records every vessel. The lighthouse was automated twenty years ago.',
   types, labels: { blue: 'Ines', purple: 'Delphine', green: 'Present day', orange: 'Flashback' }, target: 60000, sessionTarget: 800, deadline: day(-75), emDashCheck: true,
   scratch: 'Maybe the bell is the last scene. The north marker rings twice when the water turns.',
+  pins: ['sc2', 'rs_bell'],
+  collections: [{ id: 'col_delphine', name: 'Everything Delphine knows', filter: {}, ids: ['sc3', 'sc6', 'sc7', 'sc2'] }],
 })
 
 const ines = add('entity', 'ent_ines', { type: 'character', name: 'Ines Calder', aliases: ['Ines'], summary: 'The harbourmaster’s daughter, back in Merrow for the first time in eleven years.',
@@ -76,6 +78,10 @@ add('fact', 'fact_d', { text: 'Delphine wrote the second hand', detail: '', caus
 add('story', 'st_ledger', { title: 'The Ledger', order: 1, pov: ines, form: 'prose', premise: 'Ines comes home to bury her father and is handed the book he kept for the night boats.', beats: ['Arrival', 'Discovery', 'Pressure', 'Turn', 'Choice'], target: 9000 })
 add('story', 'st_salt', { title: 'Salt Year', order: 2, pov: delphine, form: 'prose', premise: 'Delphine, the winter the Belle went down.', beats: ['Before', 'The night', 'After'] })
 add('story', 'st_minutes', { title: 'Minutes of the Pier Committee', order: 3, form: 'documents', premise: 'The town meeting, as recorded.', beats: [] })
+// The Ledger in three chapters (a chapter shares its first scene's order and sorts before it).
+add('section', 'ch_home', { story: 'st_ledger', order: 1, type: 'chapter', title: 'Homecoming', synopsis: 'Ines is back for the funeral, and Tomas hands her the ledger.' })
+add('section', 'ch_delphine', { story: 'st_ledger', order: 3, type: 'chapter', title: 'Delphine', synopsis: 'Ines takes the second hand to Delphine.' })
+add('section', 'ch_crossing', { story: 'st_ledger', order: 4, type: 'chapter', title: 'The crossing', synopsis: 'What Tomas’s father did, and what Ines does about it.' })
 
 const sc = (id: string, story: string, order: number, title: string, card: string, prose: string, extra: Record<string, unknown> = {}) =>
   add('scene', id, { story, order, title, card, wants: '', mustLand: [], beat: '', cast: [], links: {}, prose, pinned: false, snapshots: [], status: prose ? 'draft' : 'todo', ...extra })
@@ -110,6 +116,24 @@ add('chat', 'chat1', { mode: 'assistant', title: 'Is the ledger reveal too early
   { role: 'user', text: 'Is the ledger reveal too early?' },
   { role: 'assistant', text: 'Not the ledger itself: the story needs it on the page by scene 2. What lands early is the **initial**. Right now the reader connects the D to Delphine before Ines does, so scene 3 plays as confirmation instead of confrontation.\n\n- Keep the torn margin, lose the letter.\n- Let Delphine’s handwriting do the work in scene 3, when Ines sees her shopping list on the table.' },
 ] })
+
+// Research: two notes and a clipped page (no files, so the sample needs nothing on disk).
+add('research', 'rs_bell', { type: 'note', title: 'How a bell buoy rings', about: ['ent_light'], at: iso(30), text: `A bell buoy has no motor. Loose hammers hang around the bell and the swell swings them into it: rough water, a steady toll; flat calm, nothing.
+
+At slack water, when the tide turns, the buoy sits still for a few minutes. Two strokes and then quiet is about right for the turn.
+
+For the north marker. Nobody rings it.` })
+add('research', 'rs_smuggling', { type: 'web', title: 'Smuggling', url: 'https://en.wikipedia.org/wiki/Smuggling', about: [ledger, 'st_ledger'], at: iso(52),
+  text: 'For the night boats: what a harbour book would show, and what it would hide.', clip: `Smuggling is moving goods past the law: usually to avoid paying duty on them, sometimes because they are banned outright.
+
+On tidal coasts, small boats could land a cargo at night on a falling tide, when the water left a beach or a slipway clear and the customs men were watching the main quay.
+
+Harbour officials kept a book of every vessel: its master, its tonnage, its cargo and the dues it paid. A false entry could cover a cargo. A fee far too large for the tonnage could pay for looking the other way.` })
+add('research', 'rs_ines', { type: 'note', title: 'What Ines remembers of Merrow', about: [ines], at: iso(75), text: `The smell of the harbour office. The bell. Her father ruling columns at the kitchen table on Sundays.
+
+She remembers the Belle going down as a sound, not a sight: everyone on the quay going quiet at once.
+
+She does not remember Delphine ever coming to the house. Check that against scene 3.` })
 
 for (let i = 0; i < 18; i++) if (i % 3 !== 1) add('day', 'day_' + day(i), { date: day(i), start: 1000 + i * 10, words: 1000 + i * 10 + ((i * 337) % 900) + 120 })
 return records

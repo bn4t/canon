@@ -1,0 +1,7 @@
+/* Find and replace: where to search, and results grouped by kind */
+.find-scopes { flex-wrap: wrap; gap: 5px }
+.find-scopes > .lbl { margin-right: 4px }
+.find-scopes .chip { cursor: pointer; font-family: inherit }
+.find-scopes .chip:not(.on):hover { color: var(--ink); background: var(--hover) }
+.find-grp { padding: 6px 2px 0 }
+.find-hit .chip { flex: none }

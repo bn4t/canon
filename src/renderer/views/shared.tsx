@@ -18,6 +18,8 @@ export function hrefOf(s: State, id: string): string {
   if (r.kind === 'story') return 'story/' + id
   if (r.kind === 'scene') return 'scene/' + id
   if (r.kind === 'question') return 'questions/' + id
+  if (r.kind === 'section') return 'text/' + id
+  if (r.kind === 'research') return 'research/' + id
   return ''
 }
 export const RecLink = ({ s, id }: { s: State; id: string }) => <a className="chip" href={'#' + hrefOf(s, id)}>{nameOf(s, id) || 'Missing'}</a>
@@ -33,6 +35,8 @@ function PickList({ s, exclude, kinds, onPick }: { s: State; exclude: string[]; 
     ...(kinds.includes('fact') ? [...events(s), ...plainFacts(s)].map(f => ({ id: f.id, g: f.at !== undefined ? 'Events' : 'Facts', n: nameOf(s, f.id) })) : []),
     ...(kinds.includes('story') ? stories(s).map(x => ({ id: x.id, g: 'Stories', n: x.title })) : []),
     ...(kinds.includes('scene') ? allScenes(s).map(x => ({ id: x.id, g: 'Scenes', n: x.title })) : []),
+    ...(kinds.includes('section') ? stories(s).flatMap(st => list(s, 'section').filter(x => x.story === st.id).sort((a, b) => a.order - b.order)).map(x => ({ id: x.id, g: 'Chapters', n: nameOf(s, x.id) })) : []),
+    ...(kinds.includes('research') ? list(s, 'research').sort((a, b) => b.at.localeCompare(a.at)).map(x => ({ id: x.id, g: 'Research', n: x.title })) : []),
   ].filter(x => !exclude.includes(x.id)), [s, exclude, kinds])
   const hits = all.filter(x => x.n.toLowerCase().includes(q.toLowerCase())).slice(0, 60)
   return <div className="stack" style={{ gap: 4, width: 300 }}>
