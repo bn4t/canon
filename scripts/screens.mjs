@@ -55,4 +55,7 @@ for (const scheme of (process.env.SCHEMES || 'light,dark').split(',')) {
     console.log(name)
   }
 }
-await app.close()
+// Electron's close can hang after the window goes; don't let that keep the run alive
+await Promise.race([app.close(), new Promise(r => setTimeout(r, 3000))])
+app.process().kill()
+process.exit(0)

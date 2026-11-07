@@ -201,17 +201,17 @@ button.chip:hover, a.chip:hover { border-color: var(--line2) }
 .side .grp .icon-btn { opacity: .0; transition: opacity .1s }
 .side-scroll:hover .grp .icon-btn, .side .grp .icon-btn:focus-visible { opacity: 1 }
 .side-hint { padding: 2px 8px; font-size: 11.5px; color: var(--faint) }
-.tree { display: grid }
+.tree { display: grid; grid-template-columns: minmax(0, 1fr) }
 .tree-story { display: flex; align-items: center; gap: 2px; height: 28px; padding: 0 8px 0 0; border-radius: 7px; color: var(--ink) }
 .tree-story:hover { background: var(--hover) }
 .tree-story.on { background: var(--hover) }
 .tree-story a { text-decoration: none; font-weight: 500; line-height: 28px }
-.tree-story small, .tree-scene small { color: var(--faint); font: 10.5px var(--f-mono); flex: none }
+.tree-story small, .tree-scene small { color: var(--faint); font: 10.5px var(--f-mono); flex: none; margin-left: 8px }
 .disc { width: 20px; height: 20px; display: grid; place-items: center; border: 0; background: none; color: var(--faint); border-radius: 4px; flex: none; margin-left: 2px }
 .disc .icon { transition: transform .12s }
 .disc.open .icon { transform: rotate(90deg) }
 .disc:hover { color: var(--ink) }
-.tree-scenes { display: grid; gap: 1px; padding: 1px 0 6px 14px }
+.tree-scenes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; padding: 1px 0 6px 14px }
 .tree-scene { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 7px; text-decoration: none; color: var(--ink2); border: 0; background: transparent; width: 100%; text-align: left; font-size: 13px }
 .tree-scene:hover { background: var(--hover) }
 .tree-scene.on { background: var(--panel); color: var(--ink); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line) }

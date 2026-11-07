@@ -17,6 +17,8 @@
 .set-box.pad { padding: 14px 16px }
 .set-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-top: 1px solid var(--line); min-width: 0 }
 .set-row:first-child { border-top: 0 }
+.set-row.wrap { flex-wrap: wrap; row-gap: 10px }
+.set-row.wrap > .grow { flex: 1 1 220px; min-width: 0 }
 label.set-row:hover { background: var(--accent-tint) }
 .set-num { width: 96px; flex: none; padding: 4px 8px }
 .set-words { min-width: 110px; text-align: right; font-variant-numeric: tabular-nums }

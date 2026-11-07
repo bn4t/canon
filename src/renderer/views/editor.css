@@ -134,7 +134,8 @@ button.ed-q:hover { color: var(--ink); border-left-color: var(--accent) }
 .ed-mini i { display: block; height: 100%; background: var(--accent); border-radius: 2px }
 .ed-hint { display: inline-flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis }
 .ed-foot .bar-sep { margin: 0 -8px }
-@media (max-width: 1180px) { .ed-hint { display: none } .ed-hint + .bar-sep { display: none } }
+.ed-foot { container-type: inline-size }
+@container (max-width: 900px) { .ed-hint { display: none } .ed-hint + .bar-sep { display: none } }
 
 /* ⋯ menu and history */
 .ed-more-i .icon { margin-top: 2px; color: var(--muted) }

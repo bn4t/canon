@@ -119,7 +119,7 @@ function Stories({ s }: { s: State }) {
             </div>
             <div className="stack" style={{ gap: 5 }}>
               <div className="home-seg">{by.map(x => <span key={x.k} style={{ flex: x.n, background: STATUS_COLOR[x.k] }} />)}</div>
-              <span className="small muted clip">{!scs.length ? (st.premise.trim() ? 'Premise only' : 'Empty') : by.map(x => `${x.n} ${STATUS_WORD[x.k]}`).join(' · ') + (by.length === 1 && by[0].k === 'todo' && cards === scs.length ? ' · cards written' : '')}</span>
+              <span className="small muted home-sline">{!scs.length ? (st.premise.trim() ? 'Premise only' : 'Empty') : by.map(x => `${x.n} ${STATUS_WORD[x.k]}`).join(' · ') + (by.length === 1 && by[0].k === 'todo' && cards === scs.length ? ' · cards written' : '')}</span>
             </div>
             <div className="home-w">{w.toLocaleString()}{st.target ? ` / ${st.target.toLocaleString()}` : ''}</div>
           </a>

@@ -49,7 +49,7 @@ export const factCode = (s: State, id: string) => { const f = get(s, id, 'fact')
 /** Short label for a record in a chip: a code for facts, the name otherwise. */
 export const shortName = (s: State, id: string) => get(s, id, 'fact') ? factCode(s, id) : nameOf(s, id) || 'Missing'
 
-const AVATAR = ['var(--l-blue)', 'var(--l-red)', 'var(--l-purple)', 'var(--l-green)', 'var(--l-orange)', 'var(--l-yellow)']
+const AVATAR = ['var(--l-blue)', 'var(--l-purple)', 'var(--l-green)', 'var(--l-orange)', 'var(--l-red)', 'var(--l-yellow)']
 export const avatarColor = (name: string) => AVATAR[[...name].reduce((n, c) => n + c.charCodeAt(0), 0) % AVATAR.length]
 export const Av = ({ name, size = 20 }: { name: string; size?: number }) =>
   <span className="kav" style={{ background: avatarColor(name), width: size, height: size, fontSize: size * .52 }} aria-hidden="true">{(name.trim()[0] || '?').toUpperCase()}</span>

@@ -386,7 +386,7 @@ function Card({ s, sc, n, hash, notes, over, drag }: { s: State; sc: Scene; n?: 
       <span className="ol-ft">
         <span className={'ol-pill ' + st.id}>{st.label}</span>
         {sc.prose.trim() && <span className="wc">{words(sc.prose).toLocaleString()}{sc.target ? ` / ${sc.target.toLocaleString()}` : ''} words</span>}
-        {notes > 0 && <span className="wc warn">· {plural(notes, 'note')}</span>}
+        {notes > 0 && <span className="wc warn">{plural(notes, 'note')}</span>}
         {ready ? <span className="wc ai">Ready to draft</span> : BUILT[b].label && <span className={'wc ' + BUILT[b].cls} title={BUILT[b].hint}>{BUILT[b].label}</span>}
       </span>
     </a>

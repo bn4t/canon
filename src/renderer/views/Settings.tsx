@@ -109,9 +109,16 @@ function Goals({ s }: { s: State }) {
   }, [s])
   const max = Math.max(1, ...hist.map(h => h.n))
   const freq = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const sc of allScenes(s)) for (const w of sc.prose.toLowerCase().match(/[a-z’']{3,}/g) || []) if (!STOP.has(w)) m.set(w, (m.get(w) || 0) + 1)
-    return [...m].sort((a, b) => b[1] - a[1]).slice(0, 24)
+    // count case-insensitively, but show names as written: a word that never appears in lowercase keeps its capital
+    const m = new Map<string, number>(), shown = new Map<string, string>()
+    for (const sc of allScenes(s)) for (const raw of sc.prose.match(/[\p{L}’']{3,}/gu) || []) {
+      const w = raw.toLowerCase()
+      if (STOP.has(w)) continue
+      m.set(w, (m.get(w) || 0) + 1)
+      if (raw === w) shown.set(w, w)
+      else if (!shown.has(w)) shown.set(w, raw)
+    }
+    return [...m].sort((a, b) => b[1] - a[1]).slice(0, 24).map(([w, n]) => [shown.get(w) || w, n] as const)
   }, [s])
   const num = (v: number | undefined, fn: (n: number | undefined) => void, label: string, step = 1000) =>
     <label className="field"><span className="lbl">{label}</span><input className="f" type="number" min={0} step={step} value={v || ''} placeholder="None" onChange={e => fn(Number(e.target.value) || undefined)} /></label>
@@ -341,7 +348,7 @@ export function Assistant() {
       </Group>
       <Group label="Model">
         <div className="set-box">
-          <div className="set-row">
+          <div className="set-row wrap">
             <span className="grow"><b>Default</b><span className="small muted" style={{ display: 'block' }}>Used for everything unless you choose otherwise below</span></span>
             <ModelPick m={cfg.default} label="Default" onChange={m => save({ ...cfg, default: m })} />
           </div>
@@ -354,8 +361,8 @@ export function Assistant() {
             const own = cfg.jobs[j.id]
             const eff = modelFor(j.id, ai)
             return (
-              <div key={j.id} className="set-row" style={{ alignItems: 'flex-start' }}>
-                <span className="grow" style={{ minWidth: 0 }}><b style={{ fontWeight: 500 }}>{j.label}</b><span className="small muted" style={{ display: 'block' }}>{j.hint}</span>
+              <div key={j.id} className="set-row wrap" style={{ alignItems: 'flex-start' }}>
+                <span className="grow"><b style={{ fontWeight: 500 }}>{j.label}</b><span className="small muted" style={{ display: 'block' }}>{j.hint}</span>
                   {fallsBack(j.id, ai) && <span className="set-warn"><Icon name="questions" size={13} />{providerName(own!.provider)} isn’t connected, so this falls back to the default.</span>}</span>
                 <span className="stack" style={{ gap: 6, justifyItems: 'end' }}>
                   <select className="f set-sel" value={own ? 'own' : 'default'} aria-label={`${j.label} model`} onChange={e => setJob(j.id, e.target.value === 'own' ? { ...cfg.default } : undefined)}>

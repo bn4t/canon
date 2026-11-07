@@ -167,6 +167,7 @@ function Decide({ s, q }: { s: State; q: Question }) {
             <textarea className="inline" autoFocus value={own} placeholder="Your answer: what’s true, and why" aria-label="Your answer" onChange={e => setOwn(e.target.value)} /></div>
         ) : <button className="qs-opt dashed" role="radio" aria-checked={false} onClick={() => pick('own')}><span className="rad" /><span className="d muted">Write your own answer…</span></button>}
       </div>
+      {choice === undefined && <div className="qs-step off"><span className="qs-n off">2</span>What changes in the canon<span className="lbl" style={{ fontWeight: 400, marginLeft: 4 }}>shows once you pick an answer</span></div>}
       {choice !== undefined && <>
         <div className="qs-step"><span className="qs-n">2</span>What changes in the canon{items.length > 0 && <span className="lbl" style={{ fontWeight: 400, marginLeft: 4 }}>untick anything you don’t want</span>}<span className="grow" />
           {answer && <AIButton className="btn sm ghost qs-more" label={items.length ? 'Find more changes' : 'Work out what changes'} busy={job.busy && job.busy.startsWith('Working') ? job.busy : undefined} disabled={!!job.busy} onClick={workOut} />}

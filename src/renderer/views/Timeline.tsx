@@ -174,7 +174,7 @@ function KnowledgeTable({ s, sel }: { s: State; sel?: string }) {
   const [extra, setExtra] = useState<string[]>([])
   const base = knowers(s).map(e => e.id)
   const who = [...base, ...extra.filter(id => get(s, id, 'entity') && !base.includes(id))]
-  const cols = `26px minmax(220px, 1.7fr) repeat(${who.length}, minmax(130px, 1fr)) 92px minmax(160px, 1fr)`
+  const cols = `26px minmax(180px, 1.5fr) repeat(${who.length}, minmax(116px, 1fr)) 84px minmax(130px, 1fr)`
   const reader = (f: Fact) => {
     const r = readerLearns(s, f.id)
     if (r) return <a className="tl-rl" href={'#scene/' + r.id} onClick={e => e.stopPropagation()}><span>{sceneRef(s, r).replace(' · ', '·')}</span>{r.title}</a>

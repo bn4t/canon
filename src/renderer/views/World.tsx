@@ -8,12 +8,10 @@ import { f, slug } from '../schema.ts'
 import { completeJSON, useAI, aiReady } from '../ai.ts'
 import { fillGaps, draftEntity, findProblems, normalizeProposal, type FoundQ } from '../prompts.ts'
 import { useJob, JobStatus, Popover, go, Bar, Icon, AssistMenu, ProposedChanges, ConnectPrompt, Spark, startInterview, askAssistant, openSettings, type AssistItem } from '../ui.tsx'
-import { History, GuideRow, RecordPicker, hrefOf, factCode } from './shared.tsx'
+import { History, GuideRow, RecordPicker, hrefOf, factCode, avatarColor } from './shared.tsx'
 
 // ---------------- small pieces ----------------
 
-const AVATAR = ['var(--l-blue)', 'var(--l-purple)', 'var(--l-green)', 'var(--l-orange)', 'var(--l-red)', 'var(--l-yellow)']
-const avatarColor = (name: string) => AVATAR[[...name].reduce((n, c) => n + c.charCodeAt(0), 0) % AVATAR.length]
 const Av = ({ name, big, size }: { name: string; big?: boolean; size?: number }) =>
   <span className={'w-av' + (big ? ' big' : '')} style={{ background: avatarColor(name), ...(size ? { width: size, height: size } : {}) }} aria-hidden="true">{name.trim()[0]?.toUpperCase() || '?'}</span>
 const KLABEL: Record<KState, string> = { '': 'Undecided', knows: 'Knows', almost: 'Almost', believes: 'Believes otherwise', never: 'Never' }
@@ -228,7 +226,7 @@ function Sheet({ s, e, layout }: { s: State; e: Entity; layout: (bar: ReactNode,
     const mine = opts?.key === key ? opts : undefined
     return [
       <span key={key + 'k'} className="k" title={hint}>{label}</span>,
-      <div key={key + 'v'} className={'v' + (value.trim() ? '' : ' empty')}>
+      <div key={key + 'v'} className={'v' + (value.trim() ? '' : ' unset')}>
         <div className="row nowrap" style={{ alignItems: 'flex-start', gap: 8 }}>
           <textarea className="inline" rows={1} value={value} placeholder={hint || '—'} aria-label={label} onChange={ev => set(ev.target.value)} />
           {canSuggest && !value.trim() && !blank && <button className="btn sm soft w-suggest" disabled={!!job.busy} title={ready ? `Suggest a ${label.toLowerCase()}` : 'Connect an assistant'} onClick={() => suggest(key, label)}><Spark size={12} />Suggest</button>}
@@ -406,7 +404,7 @@ export function TypesView({ s }: { s: State }) {
   const [name, setName] = useState('')
   return (
     <div className="w-types-view">
-      <p className="muted">The kinds of things in your world, and the fields each one’s sheet has. Rename them, add fields, or add new kinds. Values are kept even if you remove a field.</p>
+      <p className="muted">Rename a kind, change its fields, or add a new kind. Values stay put even if you remove a field.</p>
       {Object.entries(types).map(([id, t]) => {
         const n = entities(s, id).length
         return (

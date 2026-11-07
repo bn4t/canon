@@ -20,9 +20,10 @@
 .home-spark { display: flex; align-items: flex-end; gap: 4px; height: 44px }
 .home-spark i { flex: 1; background: color-mix(in srgb, var(--accent) 26%, var(--panel)); border-radius: 2px 2px 0 0; min-height: 0 }
 .home-spark i.today { background: var(--accent) }
-.home-srow { display: grid; grid-template-columns: minmax(0, 1fr) 150px 92px; gap: 14px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); text-decoration: none; color: inherit; border-radius: 6px }
+.home-srow { display: grid; grid-template-columns: minmax(0, 1fr) 176px 92px; gap: 14px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); text-decoration: none; color: inherit; border-radius: 6px }
 .home-srow:hover .home-stitle { color: var(--accent-ink) }
 .home-stitle { font: 500 16px/1.3 var(--f-prose) }
+.home-sline { line-height: 1.35 }
 .home-seg { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--sunk); gap: 2px }
 .home-w { text-align: right; font-size: 12.5px; color: var(--ink2); font-variant-numeric: tabular-nums }
 .home-need { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border: 0; border-top: 1px solid var(--line); background: transparent; text-decoration: none; color: inherit; text-align: left; width: 100%; font: inherit }
